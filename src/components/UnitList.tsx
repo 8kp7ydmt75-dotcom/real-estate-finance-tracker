@@ -1,8 +1,8 @@
 import React, { useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { useApp } from '../appContext';
-import { formatCurrency, getUnitCode, getUnitKey, recomputeUnitTotals } from '../utils';
-import { OwnershipType, Unit } from '../types';
+import { useApp } from '../context/appContext';
+import { formatCurrency, getUnitCode, getUnitKey, recomputeUnitTotals } from '../utils/utils';
+import { OwnershipType, Unit } from '../types/types';
 import { Filter, Plus, Search } from 'lucide-react';
 import UnitFormModal from './UnitFormModal';
 

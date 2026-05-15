@@ -13,6 +13,8 @@ const getEnvValue = (key: typeof requiredEnvKeys[number]) => {
   return typeof value === 'string' ? value.trim() : '';
 };
 
+export const isDemoMode = String(import.meta.env.VITE_DEMO_MODE ?? '').toLowerCase() === 'true';
+
 const supabaseUrl = getEnvValue('VITE_SUPABASE_URL');
 const supabaseAnonKey = getEnvValue('VITE_SUPABASE_ANON_KEY');
 
@@ -23,6 +25,8 @@ const invalidUrl = supabaseUrl && !placeholderValues.has(supabaseUrl) && !/^http
   : null;
 
 const buildConfigErrorMessage = () => {
+  if (isDemoMode) return null;
+
   if (missingKeys.length) {
     return `Supabase configuration is missing. Add ${missingKeys.join(' and ')} to .env.local before starting the app. See .env.example for the required keys.`;
   }
@@ -43,6 +47,7 @@ export const isSupabaseConfigured = !supabaseConfigError;
 let supabaseClient: SupabaseClient | null = null;
 
 export const getSupabaseClient = () => {
+  if (isDemoMode) throw new Error('Supabase is disabled while VITE_DEMO_MODE=true.');
   if (supabaseConfigError) throw supabaseConfigError;
   if (!supabaseUrl || !supabaseAnonKey) {
     throw new Error('Supabase configuration is missing. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to .env.local before starting the app.');

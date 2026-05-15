@@ -1,4 +1,4 @@
-import { OwnershipType, Transaction, TransactionScope, TransactionSide, Unit, UnitFinancials } from './types';
+import { OwnershipType, Transaction, TransactionScope, TransactionSide, Unit, UnitFinancials } from '../types/types';
 
 export const formatCurrency = (amount: number) => {
   return new Intl.NumberFormat('en-IN', {

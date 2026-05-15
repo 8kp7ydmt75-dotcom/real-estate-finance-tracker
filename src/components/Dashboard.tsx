@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { useApp } from '../appContext';
-import { computeDashboardMetrics, formatCurrency, getUnitCode, getUnitKey, recomputeUnitTotals } from '../utils';
+import { useApp } from '../context/appContext';
+import { computeDashboardMetrics, formatCurrency, getUnitCode, getUnitKey, recomputeUnitTotals } from '../utils/utils';
 import {
   ArrowDownRight,
   ArrowUpRight,
@@ -14,7 +14,7 @@ import {
   Receipt,
   SquareStack,
 } from 'lucide-react';
-import { OwnershipType, Transaction, TransactionScope, TransactionSide } from '../types';
+import { OwnershipType, Transaction, TransactionScope, TransactionSide } from '../types/types';
 import TransactionFormModal from './TransactionFormModal';
 
 type DashboardTab = 'Overview' | 'Units' | 'Costs' | 'Collections' | 'JV Summary';

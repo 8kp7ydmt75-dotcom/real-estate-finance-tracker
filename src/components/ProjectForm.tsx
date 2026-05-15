@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { NewProjectInput, Project } from '../types';
+import { NewProjectInput, Project } from '../types/types';
 
 interface ProjectFormProps {
   project?: Project;

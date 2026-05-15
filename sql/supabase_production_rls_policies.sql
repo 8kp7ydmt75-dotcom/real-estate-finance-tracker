@@ -1,0 +1,81 @@
+-- Production RLS starter template for Builder Ledger India.
+--
+-- This file is intentionally conservative. Review and adapt it to your
+-- authentication model before deploying. Do not expose a public Supabase-backed
+-- app with RLS disabled.
+
+alter table projects enable row level security;
+alter table units enable row level security;
+alter table transactions enable row level security;
+alter table transaction_audit_log enable row level security;
+
+-- Suggested tenant model:
+-- 1. Add an organization_id column to projects.
+-- 2. Add a memberships table mapping auth.uid() to organization_id.
+-- 3. Allow users to read/write rows only for organizations they belong to.
+--
+-- Example membership table:
+--
+-- create table if not exists organization_memberships (
+--   organization_id uuid not null,
+--   user_id uuid not null references auth.users(id) on delete cascade,
+--   role text not null check (role in ('owner', 'admin', 'accountant', 'viewer')),
+--   primary key (organization_id, user_id)
+-- );
+
+-- Replace this helper with your actual tenant lookup.
+-- create or replace function can_access_project(target_project_id uuid)
+-- returns boolean
+-- language sql
+-- security definer
+-- set search_path = public
+-- as $$
+--   select exists (
+--     select 1
+--     from projects p
+--     join organization_memberships m on m.organization_id = p.organization_id
+--     where p.id = target_project_id
+--       and m.user_id = auth.uid()
+--   );
+-- $$;
+
+-- Example policies. Uncomment only after adding tenant ownership columns and
+-- the helper above.
+--
+-- create policy "members can read projects"
+-- on projects for select
+-- using (can_access_project(id));
+--
+-- create policy "admins can manage projects"
+-- on projects for all
+-- using (can_access_project(id))
+-- with check (can_access_project(id));
+--
+-- create policy "members can read units"
+-- on units for select
+-- using (can_access_project(project_id));
+--
+-- create policy "admins can manage units"
+-- on units for all
+-- using (can_access_project(project_id))
+-- with check (can_access_project(project_id));
+--
+-- create policy "members can read transactions"
+-- on transactions for select
+-- using (can_access_project(project_id));
+--
+-- create policy "admins and accountants can manage transactions"
+-- on transactions for all
+-- using (can_access_project(project_id))
+-- with check (can_access_project(project_id));
+--
+-- create policy "members can read audit logs"
+-- on transaction_audit_log for select
+-- using (
+--   exists (
+--     select 1
+--     from transactions t
+--     where t.id = transaction_audit_log.transaction_id
+--       and can_access_project(t.project_id)
+--   )
+-- );

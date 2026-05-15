@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Unit } from '../types';
-import { getUnitCode } from '../utils';
+import { Unit } from '../types/types';
+import { getUnitCode } from '../utils/utils';
 
 interface UnitFormModalProps {
   initialUnit?: Unit;

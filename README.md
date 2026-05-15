@@ -1,29 +1,114 @@
-# Real Estate Finance Tracker
+# Builder Ledger India — Real Estate Finance Tracker
 
-A project finance and operations dashboard for residential real-estate teams. It tracks inventory, buyer collections, vendor exposure, unit economics, and project-level profitability in one focused workspace.
+An India-focused real estate finance and operations dashboard for builders and developers to manage apartment inventory, buyer collections, vendor payables, landowner allocations, unit economics, and project-level profitability.
 
-This repo is intentionally generic: bring your own Supabase project, your own projects/units/transactions, and optionally your own logo.
+The public repository uses mock data only. It does not include real buyer names, real phone numbers, private project records, invoices, PDFs, Excel files, Supabase credentials, or private branding assets.
 
-## What It Solves
+## Overview
 
-Real-estate finance often lives across spreadsheets, WhatsApp updates, vendor bills, and ad hoc notes. This app gives builders, developers, and project operators a structured place to answer practical questions:
+Builder Ledger India is a full-stack dashboard for residential real-estate project control. It helps teams track flat inventory, buyer receipts, vendor invoices, vendor payments, landowner reimbursements, and unit-level margins from one structured workspace.
 
-- Which units are sold, unsold, settled, or assigned to landowners?
-- How much has each buyer paid, and what is still due?
-- What has been paid to vendors, what is still payable, and where are invoices overdue?
-- What is the cost and margin per unit?
-- How do project-wide costs allocate across all units?
+The app supports two operating modes:
 
-## Features
+- Demo mode: local mock data, no backend required
+- Supabase mode: project, unit, transaction, and audit-log data stored in Supabase PostgreSQL
 
-- Multi-project workspace with project-scoped units and transactions
-- Dashboard KPIs for revenue, collections, vendor payables, costs, and projected profit
-- Developer and engineering views for economic versus all-unit cost analysis
-- Unit list with buyer status, pricing, cost, margin, and balance due
-- Unit detail pages for drilling into receipts, costs, and transaction history
-- Transaction ledger for buyer receipts, vendor invoices, vendor payments, and landowner reimbursables
-- Soft-delete and audit-aware transaction update flow
-- Local branding support through environment variables and an in-app logo uploader
+## Why This Exists
+
+Many small and mid-sized Indian builders still coordinate project finance through Excel sheets, WhatsApp messages, vendor calls, and memory. That creates operational risk:
+
+- buyer dues are hard to reconcile with agreed sale value
+- vendor invoices and payments are tracked separately
+- landowner allocations are easy to miss
+- project-wide costs are difficult to allocate across units
+- margin discussions happen without a reliable source of truth
+
+Builder Ledger India turns those workflows into a focused finance operations system.
+
+## Key Features
+
+- Multi-project workspace
+- Apartment inventory with developer and landowner ownership views
+- Buyer receipt tracking and balance due calculations
+- Vendor invoice and vendor payment ledger
+- Project-wide and per-unit transaction scopes
+- Landowner reimbursable expense tracking
+- Unit cost allocation by total built-up area
+- Unit-level margin visibility
+- Dashboard KPIs for agreed sales, collections, cost exposure, payables, and projected profit
+- Audit-aware transaction updates and soft deletes
+- Local branding through environment variables or runtime logo upload
+
+## India-Specific Workflows
+
+- Apartment/flat inventory with tower, floor, flat number, BHK, carpet area, and total built-up area
+- Buyer collections through NEFT, RTGS, UPI, cheque, or cash
+- Vendor payables for construction work packages
+- Landowner and developer unit separation for joint-development projects
+- Landowner reimbursable tracking for owner-side unit expenses
+- Project-wide construction cost allocation across units
+
+## Demo Mode
+
+Demo mode works without Supabase and is enabled by default in `.env.example`:
+
+```env
+VITE_DEMO_MODE=true
+```
+
+The demo dataset lives in `src/data/demoData.ts` and includes:
+
+- sample project: Demo Heights
+- developer and landowner units
+- buyer receipts
+- vendor invoices
+- vendor payments
+- landowner reimbursable records
+- project-wide construction costs
+
+All demo records are fictional.
+
+## Architecture
+
+```text
+Supabase PostgreSQL / Demo JSON Data
+        ↓
+services/dataService.ts
+        ↓
+React Context
+        ↓
+Dashboard / Unit List / Unit Detail / Transaction Ledger
+```
+
+- Supabase stores projects, units, transactions, and audit logs.
+- Demo mode uses local mock data from `src/data/demoData.ts`.
+- `services/dataService.ts` handles database/demo data access and mapping.
+- React Context manages active project state.
+- Components render dashboards, unit views, and ledgers.
+- `validation/transactionValidation.ts` keeps financial rules outside the UI.
+
+## Screenshots
+
+Placeholder images are included so these links render. Replace them with real screenshots from demo mode before sharing the project widely.
+
+![Dashboard](docs/screenshots/dashboard.png)
+![Unit List](docs/screenshots/unit-list.png)
+![Transaction Ledger](docs/screenshots/transaction-ledger.png)
+
+To capture screenshots manually:
+
+1. Run `npm install`.
+2. Copy `.env.example` to `.env.local` and keep `VITE_DEMO_MODE=true`.
+3. Run `npm run dev`.
+4. Open the Demo Heights project.
+5. Capture:
+   - Dashboard: project overview page
+   - Unit List: `/units` screen
+   - Transaction Ledger: `/transactions` screen
+6. Save them as:
+   - `docs/screenshots/dashboard.png`
+   - `docs/screenshots/unit-list.png`
+   - `docs/screenshots/transaction-ledger.png`
 
 ## Tech Stack
 
@@ -37,99 +122,80 @@ Real-estate finance often lives across spreadsheets, WhatsApp updates, vendor bi
 
 ## Local Setup
 
-Install dependencies:
-
 ```bash
 npm install
-```
-
-Create your local environment file:
-
-```bash
 cp .env.example .env.local
+npm run dev
 ```
 
-Fill in your Supabase project values:
+Default demo `.env.local`:
 
 ```env
 VITE_SUPABASE_URL=https://your-project-ref.supabase.co
 VITE_SUPABASE_ANON_KEY=your_supabase_anon_or_publishable_key
-VITE_APP_NAME=Real Estate Finance Tracker
+VITE_DEMO_MODE=true
+VITE_APP_NAME=Builder Ledger India — Real Estate Finance Tracker
 VITE_APP_LOGO_URL=
 ```
 
-Use a public frontend key only: either the newer `sb_publishable_...` key or the legacy `anon` key. Never put a `service_role` or `sb_secret_...` key in this Vite app.
+## Supabase Setup
 
-Create the database tables by running this in the Supabase SQL Editor:
+For Supabase-backed mode:
 
-```text
-sql/supabase_setup.sql
-```
+1. Create a Supabase project.
+2. Run `sql/supabase_setup.sql` in the Supabase SQL Editor.
+3. Set `VITE_DEMO_MODE=false`.
+4. Add your Supabase URL and public anon or publishable key to `.env.local`.
 
-If Row Level Security blocks local development writes, run:
+Local/private development helper:
 
 ```text
 sql/supabase_local_rls_fix.sql
 ```
 
-Start the app:
+Disabling RLS is acceptable only for local/private testing. Do not deploy a public Supabase-backed app with RLS disabled. Never expose `service_role` or secret keys in the frontend. Review `sql/supabase_production_rls_policies.sql` before production.
+
+## Privacy And Data Safety
+
+This public repository is designed to be privacy-safe:
+
+- mock data only
+- no real buyer/vendor/payment records
+- no real phone numbers or emails
+- no Aadhaar or PAN data
+- no Excel, CSV, PDF, DOCX, agreements, invoices, or private exports
+- no `.env.local`
+- no Supabase service-role or secret keys
+- no private branding assets
+
+Before publishing your own fork, run a privacy scan:
 
 ```bash
-npm run dev
+rg "your-project-name|your-company-name|real-buyer-name|Aadhaar|PAN|service[_-]?role|sb_secret|eyJ|[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}" -i
+find . -name '*.xlsx' -o -name '*.csv' -o -name '*.pdf' -o -name '*.docx'
 ```
 
-## Branding
+## Documentation
 
-The public default is `Real Estate Finance Tracker`.
+- [Product brief](docs/product-brief.md)
+- [Data model](docs/data-model.md)
+- [Privacy design](docs/privacy-design.md)
+- [Deployment notes](docs/deployment-notes.md)
 
-For a private/local project, customize branding in `.env.local`:
+## Roadmap
 
-```env
-VITE_APP_NAME=Your Project Finance Dashboard
-VITE_APP_LOGO_URL=/local-brand-logo.jpg
-```
+- Authentication and role-based access control
+- Production-ready tenant-based RLS policies
+- CSV import templates for units and opening ledgers
+- Exportable project finance reports
+- Aging reports for buyer dues and vendor payables
+- Screenshot-backed demo walkthrough
+- CI workflow for build, dashboard tests, and privacy scan
 
-Place local-only logo files under `public/local-brand-logo.*`; these files are ignored by git. Users can also upload a logo from the sidebar while using the app. Uploaded logos are stored only in that browser's local storage.
+## Resume Summary
 
-## Available Scripts
+Built a full-stack real estate finance and operations dashboard for Indian residential builders using React, TypeScript, Vite, and Supabase. The app tracks apartment inventory, buyer collections, vendor payables, landowner allocations, unit economics, audit-aware transaction updates, and project-level profitability using a privacy-safe mock dataset for public demonstration.
 
-```bash
-npm run dev
-npm run build
-npm run preview
-npm run test:dashboard
-npm run check:supabase
-```
+## License
 
-## Privacy Notes
-
-This repository does not include buyer data, project data, Supabase credentials, or private branding assets. Real project data should live in your own Supabase database and local `.env.local`, both outside version control.
-
-Before publishing your own fork, check for secrets and personal data:
-
-```bash
-rg "VITE_SUPABASE|service_role|sb_secret|eyJ|phone|buyer|your-company-name"
-```
-
-## Repository Structure
-
-```text
-.
-├── App.tsx
-├── appContext.tsx
-├── components/
-├── dataService.ts
-├── scripts/
-├── sql/
-├── supabaseClient.ts
-├── transactionValidation.ts
-├── types.ts
-└── utils.ts
-```
-
-## Suggested Next Steps
-
-- Add authentication and role-based access for production use
-- Replace local RLS bypass with policies that match your team
-- Add import/export workflows for existing spreadsheets
-- Add screenshots or a demo dataset for portfolio presentation
+MIT

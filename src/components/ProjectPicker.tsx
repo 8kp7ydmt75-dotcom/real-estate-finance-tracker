@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Building2, FolderOpen, Plus } from 'lucide-react';
-import { useApp } from '../appContext';
+import { useApp } from '../context/appContext';
 import ProjectForm from './ProjectForm';
 
 const ProjectPicker: React.FC = () => {

@@ -1,8 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useApp } from '../appContext';
-import { formatCurrency, getUnitCode, getUnitKey, recomputeUnitTotals } from '../utils';
-import { OwnershipType, Transaction, TransactionScope, TransactionSide } from '../types';
+import { useApp } from '../context/appContext';
+import { formatCurrency, getUnitCode, getUnitKey, recomputeUnitTotals } from '../utils/utils';
+import { OwnershipType, Transaction, TransactionScope, TransactionSide } from '../types/types';
 import { ArrowLeft, Plus, CheckCircle2, AlertCircle, Trash2, Pencil } from 'lucide-react';
 import TransactionFormModal from './TransactionFormModal';
 import UnitFormModal from './UnitFormModal';

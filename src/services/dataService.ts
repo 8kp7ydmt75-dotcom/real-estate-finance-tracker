@@ -1,4 +1,4 @@
-import { getSupabaseClient } from './supabaseClient';
+import { getSupabaseClient, isDemoMode } from './supabaseClient';
 import {
   NewProjectInput,
   NewTransactionInput,
@@ -10,11 +10,32 @@ import {
   TransactionScope,
   TransactionSide,
   Unit
-} from './types';
-import { assertPerUnitRequiresUnit } from './transactionValidation';
-import { getUnitCode } from './utils';
+} from '../types/types';
+import { assertPerUnitRequiresUnit } from '../validation/transactionValidation';
+import { getUnitCode, getUnitKey } from '../utils/utils';
+import { demoProjects, demoTransactions, demoUnits } from '../data/demoData';
 
 const SYSTEM_USER = 'system';
+const demoState = {
+  projects: demoProjects.map(project => ({ ...project })),
+  units: demoUnits.map(unit => ({ ...unit })),
+  transactions: demoTransactions.map(transaction => ({ ...transaction }))
+};
+
+const cloneProject = (project: Project): Project => ({ ...project });
+const cloneUnit = (unit: Unit): Unit => ({ ...unit });
+const cloneTransaction = (transaction: Transaction): Transaction => ({ ...transaction });
+const buildDemoId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const isDemoProject = (projectId: string) => demoState.projects.some(project => project.id === projectId);
+
+const getDemoUnit = (projectId: string, unitRef?: string) => {
+  if (!unitRef || !isDemoProject(projectId)) return undefined;
+  return demoState.units.find(unit => unit.id === unitRef || getUnitCode(unit) === unitRef);
+};
+
+const ensureDemoProject = (projectId: string) => {
+  if (!isDemoProject(projectId)) throw new Error('Demo project was not found.');
+};
 
 export const SUPABASE_SCHEMA_SETUP_ERROR = 'Supabase database tables are not set up yet. Run sql/supabase_setup.sql in the Supabase SQL Editor, then refresh the app.';
 export const SUPABASE_RLS_SETUP_ERROR = 'Supabase Row Level Security is blocking this app. Run sql/supabase_local_rls_fix.sql in the Supabase SQL Editor, then refresh the app.';
@@ -209,6 +230,10 @@ const ensureLandownerUnitForReimbursable = (unit: Unit | undefined, side: Transa
 };
 
 const fetchLinkedUnit = async (projectId: string, unitRef: string): Promise<Unit | undefined> => {
+  if (isDemoMode) {
+    const demoUnit = getDemoUnit(projectId, unitRef);
+    return demoUnit ? cloneUnit(demoUnit) : undefined;
+  }
   const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(unitRef);
   // Transaction forms submit UUIDs, but accepting unit_code keeps old bookmarks
   // and legacy calls from failing during the migration window.
@@ -261,6 +286,8 @@ const createAuditEntries = async (
 };
 
 export async function fetchAllProjects(): Promise<Project[]> {
+  if (isDemoMode) return demoState.projects.map(cloneProject);
+
   const { data, error } = await getSupabaseClient()
     .from('projects')
     .select('*')
@@ -270,6 +297,18 @@ export async function fetchAllProjects(): Promise<Project[]> {
 }
 
 export async function fetchProjectStats(projectIds: string[]): Promise<Record<string, ProjectStats>> {
+  if (isDemoMode) {
+    return Object.fromEntries(projectIds.map(projectId => [
+      projectId,
+      {
+        unitCount: isDemoProject(projectId) ? demoState.units.length : 0,
+        lastTransactionDate: isDemoProject(projectId)
+          ? demoState.transactions.reduce<string | null>((latest, transaction) => !latest || transaction.date > latest ? transaction.date : latest, null)
+          : null
+      }
+    ]));
+  }
+
   const entries = await Promise.all(projectIds.map(async (projectId) => {
     const [{ count, error: unitError }, { data: lastTransaction, error: transactionError }] = await Promise.all([
       getSupabaseClient()
@@ -304,6 +343,19 @@ export async function fetchProjectStats(projectIds: string[]): Promise<Record<st
 
 export async function createProject(input: NewProjectInput): Promise<Project> {
   const payload = validateProjectInput(input);
+  if (isDemoMode) {
+    const project: Project = {
+      id: buildDemoId('demo-project'),
+      code: payload.code,
+      name: payload.name,
+      location: payload.location,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    demoState.projects.push(project);
+    return cloneProject(project);
+  }
+
   const { data, error } = await getSupabaseClient()
     .from('projects')
     .insert(payload)
@@ -317,6 +369,14 @@ export async function createProject(input: NewProjectInput): Promise<Project> {
 export async function updateProject(id: string, input: Pick<NewProjectInput, 'name' | 'location'>): Promise<Project> {
   const name = input.name.trim();
   if (!name) throw new Error('Project name is required.');
+  if (isDemoMode) {
+    const project = demoState.projects.find(candidate => candidate.id === id);
+    if (!project) throw new Error('Demo project was not found.');
+    project.name = name;
+    project.location = input.location?.trim() || null;
+    project.updatedAt = new Date().toISOString();
+    return cloneProject(project);
+  }
 
   const { data, error } = await getSupabaseClient()
     .from('projects')
@@ -330,6 +390,11 @@ export async function updateProject(id: string, input: Pick<NewProjectInput, 'na
 }
 
 export async function fetchUnits(projectId: string): Promise<Unit[]> {
+  if (isDemoMode) {
+    ensureDemoProject(projectId);
+    return demoState.units.map(cloneUnit).sort((a, b) => `${a.tower}${a.flatNumber}`.localeCompare(`${b.tower}${b.flatNumber}`));
+  }
+
   const { data, error } = await getSupabaseClient()
     .from('units')
     .select('*')
@@ -342,6 +407,11 @@ export async function fetchUnits(projectId: string): Promise<Unit[]> {
 }
 
 export async function fetchTransactions(projectId: string): Promise<Transaction[]> {
+  if (isDemoMode) {
+    ensureDemoProject(projectId);
+    return demoState.transactions.map(cloneTransaction).sort((a, b) => a.date.localeCompare(b.date));
+  }
+
   const { data, error } = await getSupabaseClient()
     .from('transactions')
     .select('*')
@@ -355,6 +425,19 @@ export async function fetchTransactions(projectId: string): Promise<Transaction[
 
 export async function createOrUpdateUnit(projectId: string, unit: Unit): Promise<Unit> {
   const payload = buildUnitPayload(projectId, unit);
+  if (isDemoMode) {
+    ensureDemoProject(projectId);
+    const nextUnit: Unit = {
+      ...unit,
+      id: unit.id || buildDemoId('demo-unit'),
+      agreedPrice: payload.agreed_price
+    };
+    const existingIndex = demoState.units.findIndex(candidate => candidate.id === nextUnit.id);
+    if (existingIndex >= 0) demoState.units[existingIndex] = nextUnit;
+    else demoState.units.push(nextUnit);
+    return cloneUnit(nextUnit);
+  }
+
   if (unit.id) {
     const { data, error } = await getSupabaseClient()
       .from('units')
@@ -380,6 +463,13 @@ export async function updateUnit(projectId: string, payload: Unit): Promise<Unit
 }
 
 export async function deleteUnit(projectId: string, id: string, deleteReason: string, deletedBy: string = SYSTEM_USER): Promise<void> {
+  if (isDemoMode) {
+    ensureDemoProject(projectId);
+    demoState.units = demoState.units.filter(unit => unit.id !== id);
+    demoState.transactions = demoState.transactions.filter(transaction => transaction.unitId !== id);
+    return;
+  }
+
   const { error } = await getSupabaseClient()
     .from('units')
     .update({ deleted_at: new Date().toISOString(), deleted_by: deletedBy, delete_reason: deleteReason || 'Soft delete' })
@@ -405,6 +495,16 @@ export async function createTransaction(projectId: string, payload: NewTransacti
     throw new Error('Selected unit was not found in this project.');
   }
   ensureLandownerUnitForReimbursable(linkedUnit, payload.side);
+  if (isDemoMode) {
+    const transaction: Transaction = {
+      ...payload,
+      id: buildDemoId('demo-tx'),
+      scope: resolvedScope,
+      unitId: resolvedScope === TransactionScope.PerUnit ? linkedUnit?.id : undefined
+    };
+    demoState.transactions.push(transaction);
+    return cloneTransaction(transaction);
+  }
 
   const insertPayload = cleanPayload({
     project_id: projectId,
@@ -432,6 +532,39 @@ export async function updateTransaction(
   changedBy: string = SYSTEM_USER,
   changeReason: string = 'Manual financial edit'
 ): Promise<Transaction> {
+  if (isDemoMode) {
+    ensureDemoProject(projectId);
+    const existingIndex = demoState.transactions.findIndex(transaction => transaction.id === id);
+    if (existingIndex < 0) throw new Error('Demo transaction not found.');
+    const existing = demoState.transactions[existingIndex];
+    const incomingSide = payload.side ?? existing.side;
+    const incomingScope = incomingSide === TransactionSide.BuyerReceipt
+      ? TransactionScope.PerUnit
+      : payload.scope ?? existing.scope ?? TransactionScope.ProjectWide;
+    if (payload.amount !== undefined && payload.amount < 0) throw new Error('Amount must be a non-negative number.');
+    const incomingUnitId = incomingScope === TransactionScope.ProjectWide
+      ? undefined
+      : payload.unitId === undefined
+        ? existing.unitId
+        : payload.unitId;
+    assertPerUnitRequiresUnit(incomingScope, incomingUnitId);
+    const linkedUnit = incomingScope === TransactionScope.PerUnit && incomingUnitId
+      ? getDemoUnit(projectId, incomingUnitId)
+      : undefined;
+    if (incomingScope === TransactionScope.PerUnit && !linkedUnit) throw new Error('Selected unit was not found in this project.');
+    ensureLandownerUnitForReimbursable(linkedUnit, incomingSide);
+
+    const nextTransaction: Transaction = {
+      ...existing,
+      ...payload,
+      side: incomingSide,
+      scope: incomingScope,
+      unitId: incomingScope === TransactionScope.PerUnit ? linkedUnit?.id : undefined
+    };
+    demoState.transactions[existingIndex] = nextTransaction;
+    return cloneTransaction(nextTransaction);
+  }
+
   const { data: existing, error: fetchError } = await getSupabaseClient()
     .from('transactions')
     .select('*')
@@ -492,6 +625,12 @@ export async function updateTransaction(
 }
 
 export async function deleteTransaction(projectId: string, id: string, deleteReason: string, deletedBy: string = SYSTEM_USER): Promise<void> {
+  if (isDemoMode) {
+    ensureDemoProject(projectId);
+    demoState.transactions = demoState.transactions.filter(transaction => transaction.id !== id);
+    return;
+  }
+
   const { error } = await getSupabaseClient()
     .from('transactions')
     .update({ deleted_at: new Date().toISOString(), deleted_by: deletedBy, delete_reason: deleteReason || 'Soft delete' })

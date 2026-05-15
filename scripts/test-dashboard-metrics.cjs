@@ -11,8 +11,8 @@ fs.mkdirSync(outDir, { recursive: true });
 fs.writeFileSync(path.join(outDir, 'package.json'), '{"type":"commonjs"}\n');
 
 execFileSync(path.join(root, 'node_modules/.bin/tsc'), [
-  'utils.ts',
-  'types.ts',
+  'src/utils/utils.ts',
+  'src/types/types.ts',
   '--module',
   'commonjs',
   '--target',
@@ -23,8 +23,8 @@ execFileSync(path.join(root, 'node_modules/.bin/tsc'), [
   '--esModuleInterop'
 ], { cwd: root, stdio: 'pipe' });
 
-const { recomputeUnitTotals, computeDashboardMetrics } = require(path.join(outDir, 'utils.js'));
-const { OwnershipType, TransactionScope, TransactionSide } = require(path.join(outDir, 'types.js'));
+const { recomputeUnitTotals, computeDashboardMetrics } = require(path.join(outDir, 'utils/utils.js'));
+const { OwnershipType, TransactionScope, TransactionSide } = require(path.join(outDir, 'types/types.js'));
 
 const makeUnit = (overrides = {}) => ({
   id: 'A201',

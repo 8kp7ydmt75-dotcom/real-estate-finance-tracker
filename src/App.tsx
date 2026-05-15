@@ -20,8 +20,8 @@ import {
   Settings,
   X
 } from 'lucide-react';
-import { AppContext, AppContextType, AppStatus, useApp } from './appContext';
-import { NewProjectInput, Project, ProjectStats, Transaction, Unit, UpdateProjectInput } from './types';
+import { AppContext, AppContextType, AppStatus, useApp } from './context/appContext';
+import { NewProjectInput, Project, ProjectStats, Transaction, Unit, UpdateProjectInput } from './types/types';
 import {
   createProject as createProjectRecord,
   createTransaction as createTransactionRecord,
@@ -36,18 +36,18 @@ import {
   SUPABASE_SCHEMA_SETUP_ERROR,
   updateProject as persistProjectRecord,
   updateTransaction as persistTransaction
-} from './dataService';
+} from './services/dataService';
 import Dashboard from './components/Dashboard';
 import ProjectForm from './components/ProjectForm';
 import ProjectPicker from './components/ProjectPicker';
 import TransactionList from './components/TransactionList';
 import UnitDetail from './components/UnitDetail';
 import UnitList from './components/UnitList';
-import { isSupabaseConfigured, supabaseConfigError } from './supabaseClient';
+import { isDemoMode, isSupabaseConfigured, supabaseConfigError } from './services/supabaseClient';
 
 const LAST_ACTIVE_PROJECT_KEY = 'property-finance:last-active-project';
 const CUSTOM_LOGO_KEY = 'property-finance:custom-logo';
-const DEFAULT_APP_NAME = 'Real Estate Finance Tracker';
+const DEFAULT_APP_NAME = 'Builder Ledger India — Real Estate Finance Tracker';
 const APP_NAME = (import.meta.env.VITE_APP_NAME || DEFAULT_APP_NAME).trim();
 const ENV_LOGO_URL = (import.meta.env.VITE_APP_LOGO_URL || '').trim();
 
@@ -78,7 +78,7 @@ const WorkspaceApp: React.FC = () => {
 
   const needsDatabaseSetup = loadError === SUPABASE_SCHEMA_SETUP_ERROR;
   const needsRlsSetup = loadError === SUPABASE_RLS_SETUP_ERROR;
-  const canUseDataRoutes = isSupabaseConfigured && !needsDatabaseSetup && !needsRlsSetup;
+  const canUseDataRoutes = (isSupabaseConfigured || isDemoMode) && !needsDatabaseSetup && !needsRlsSetup;
 
   const refreshProjectStats = useCallback(async (targetProjects: Project[]) => {
     if (!targetProjects.length) {
@@ -91,7 +91,7 @@ const WorkspaceApp: React.FC = () => {
   }, []);
 
   const refreshProjects = useCallback(async () => {
-    if (!isSupabaseConfigured) {
+    if (!isSupabaseConfigured && !isDemoMode) {
       setAppStatus('error');
       setLoadError(supabaseConfigError?.message ?? 'Supabase configuration is missing.');
       return;

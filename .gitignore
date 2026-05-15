@@ -10,7 +10,17 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+.env
+.env.*
+!.env.example
 *.local
+*.xlsx
+*.csv
+*.pdf
+*.docx
+uploads/
+private/
+exports/
 public/local-brand-logo.*
 
 # Editor directories and files

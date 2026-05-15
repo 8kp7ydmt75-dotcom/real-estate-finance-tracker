@@ -1,5 +1,5 @@
 import React, { createContext, useContext } from 'react';
-import { NewProjectInput, Project, ProjectStats, Transaction, Unit, UpdateProjectInput } from './types';
+import { NewProjectInput, Project, ProjectStats, Transaction, Unit, UpdateProjectInput } from '../types/types';
 
 export type AppStatus = 'loading' | 'selecting' | 'ready' | 'error';
 

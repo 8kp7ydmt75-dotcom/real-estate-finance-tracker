@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { X } from 'lucide-react';
-import { PaymentMode, Transaction, TransactionScope, TransactionSide, Unit, WorkPackage } from '../types';
-import { useApp } from '../appContext';
-import { getUnitCode } from '../utils';
+import { PaymentMode, Transaction, TransactionScope, TransactionSide, Unit, WorkPackage } from '../types/types';
+import { useApp } from '../context/appContext';
+import { getUnitCode } from '../utils/utils';
 
 interface TransactionFormModalProps {
   title: string;

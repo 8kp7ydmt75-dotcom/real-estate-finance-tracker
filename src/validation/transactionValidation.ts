@@ -1,4 +1,4 @@
-import { TransactionScope } from './types';
+import { TransactionScope } from '../types/types';
 
 // Mirrors the SQL transactions_scope_unit_check constraint before hitting Supabase.
 export const assertPerUnitRequiresUnit = (scope: TransactionScope, unitId?: string) => {

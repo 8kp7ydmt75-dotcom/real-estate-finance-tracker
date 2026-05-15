@@ -23,6 +23,12 @@ const env = {
 
 const supabaseUrl = env.VITE_SUPABASE_URL;
 const anonKey = env.VITE_SUPABASE_ANON_KEY;
+const demoMode = String(env.VITE_DEMO_MODE ?? '').toLowerCase() === 'true';
+
+if (demoMode) {
+  console.log('Demo mode enabled; skipping Supabase schema check.');
+  process.exit(0);
+}
 
 if (!supabaseUrl || !anonKey) {
   console.error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY.');
