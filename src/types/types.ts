@@ -1,45 +1,46 @@
 export enum TransactionSide {
-  BuyerReceipt = "Buyer Receipt",
-  VendorInvoice = "Vendor Invoice",
-  VendorPayment = "Vendor Payment",
-  LandownerReimbursable = "Landowner Reimbursable",
-  LandownerReimbursableReceipt = "Landowner Reimbursable Receipt"
+  BuyerReceipt = 'Buyer Receipt',
+  VendorInvoice = 'Vendor Invoice',
+  VendorPayment = 'Vendor Payment',
+  LandownerReimbursable = 'Landowner Reimbursable',
+  LandownerReimbursableReceipt = 'Landowner Reimbursable Receipt',
 }
 
 export enum TransactionScope {
-  ProjectWide = "ProjectWide",
-  PerUnit = "PerUnit"
+  ProjectWide = 'ProjectWide',
+  PerUnit = 'PerUnit',
 }
 
 export enum OwnershipType {
-  Developer = "Developer",
-  Landowner = "Landowner"
+  Developer = 'Developer',
+  Landowner = 'Landowner',
 }
 
 export enum WorkPackage {
-  Electrical = "Electrical",
-  Plumbing = "Plumbing",
-  Waterproofing = "Waterproofing",
-  Flooring = "Flooring & Tiling",
-  Carpentry = "Carpentry/Joinery",
-  FalseCeiling = "False Ceiling/POP",
-  Painting = "Painting",
-  Fixtures = "Fixtures (Electrical/Sanitary)",
-  Lift = "Lift/Elevator",
-  FireSafety = "Fire & Safety",
-  CommonAreas = "Common Areas",
-  Other = "Other"
+  Electrical = 'Electrical',
+  Plumbing = 'Plumbing',
+  Waterproofing = 'Waterproofing',
+  Flooring = 'Flooring & Tiling',
+  Carpentry = 'Carpentry/Joinery',
+  FalseCeiling = 'False Ceiling/POP',
+  Painting = 'Painting',
+  Fixtures = 'Fixtures (Electrical/Sanitary)',
+  Lift = 'Lift/Elevator',
+  FireSafety = 'Fire & Safety',
+  CommonAreas = 'Common Areas',
+  Other = 'Other',
 }
 
 export enum PaymentMode {
-  NEFT = "NEFT",
-  RTGS = "RTGS",
-  UPI = "UPI",
-  Cheque = "Cheque",
-  Cash = "Cash"
+  NEFT = 'NEFT',
+  RTGS = 'RTGS',
+  UPI = 'UPI',
+  Cheque = 'Cheque',
+  Cash = 'Cash',
 }
 
 export interface Project {
+  version?: number;
   id: string;
   code: string;
   name: string;
@@ -62,11 +63,12 @@ export interface ProjectStats {
 }
 
 export interface Unit {
+  version?: number;
   id?: string;
   tower: string;
   flatNumber: string;
   floor: number;
-  bhk: "2BHK" | "3BHK";
+  bhk: '2BHK' | '3BHK';
   carpetAreaSqFt: number;
   saleableAreaSqFt: number;
   ratePerSqFt: number;
@@ -82,6 +84,10 @@ export interface Unit {
 }
 
 export interface Transaction {
+  version?: number;
+  requestId?: string;
+  vendorId?: string;
+  invoiceId?: string;
   id?: string;
   /**
    * Database UUID of the linked unit. Display codes are derived from the Unit
@@ -118,6 +124,7 @@ export interface UnitFinancials {
   agreedPrice: number;
   buyerReceipts: number;
   buyerBalanceDue: number;
+  buyerCredit: number;
   unitRevenue: number;
   status: 'Sold' | 'Unsold' | 'Landowner';
   reimbursableDue: number;

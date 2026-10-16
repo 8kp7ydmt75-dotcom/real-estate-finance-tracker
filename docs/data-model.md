@@ -1,64 +1,19 @@
-# Data Model
+# Data model
 
-## Projects
+Projects scope all financial data. `project_members` associates authenticated users with owner, accountant or viewer roles. PostgreSQL RLS enforces project isolation for reads and writes, including RPC calls.
 
-Projects represent a real-estate development workspace. Each project scopes its own units and transactions so multiple developments can be managed without mixing ledgers.
+`units` retain tower/flat, floor, BHK, areas, ownership, explicit sold status, negotiated price, buyer information and handover date. IDs are UUIDs; display codes are unique within a project. Agreed price can override the area/rate formula. Buyer settlement is derived from confirmed sale value and cleared receipts, not a mutable checkbox.
 
-Key fields:
+`transactions` hold type, scope, unit UUID, amount, date, status, mode, party and a JSON-encoded details object containing description, work package and due date. Updates merge the prior object and compare the row version, so changing a note does not discard other fields. `request_id` identifies one submission and `invoice_id` optionally links a payment to an invoice.
 
-- code
-- name
-- location
-- created and updated timestamps
+`vendors` provide stable UUIDs within a project. A normalized name prevents case/whitespace variants from creating duplicate vendor accounts. The database resolves vendor IDs on writes and validates explicit invoice links against project, vendor and transaction type.
 
-## Units
+Buyer receipts require a sold developer unit. Landowner charges and reimbursements require a landowner unit. Project-wide transactions cannot retain a unit UUID. Transaction amounts must be positive, finite, within the supported range and limited to two decimals. Negative corrections use explicit editing or void/replacement with preserved history; refunds are a separate future workflow.
 
-Units represent apartments or flats inside a project.
+Only cleared cash movements enter cash totals. Invoices and landowner charges represent obligations regardless of the old settlement flag. Explicit invoice links are allocated first; unlinked vendor payments use FIFO by invoice date and ID. Remaining cash is a vendor advance. Matching is project-wide, and matched cash inherits its invoice's scope. Unit allocation uses integer paise with deterministic remainder distribution. The economic view absorbs landowner costs into developer units; the engineering view allocates across all units. Unallocated cost remains visible when no eligible units exist.
 
-Key fields:
+`finance_snapshot` returns one JSON result containing all active units/transactions and the current role from one statement. This avoids a silently truncated ledger and mismatched unit/transaction reads. Screen pagination does not change the calculation set.
 
-- tower and flat number
-- floor and BHK
-- carpet area and total built-up area
-- ownership type: Developer or Landowner
-- agreed price, rate, amenities, and adjustments
-- buyer name and buyer phone
-- sold and settled status
-- handover target
+`audit_events` is written by database triggers in the same transaction as each project/unit/transaction mutation. It stores server time, actor UUID, complete before/after records, action and void/archive reason. Application roles have read-only access. Legacy `transaction_audit_log` is retained. Units with financial history cannot be archived or change ownership; transactions are voided rather than physically deleted. Versions detect concurrent edits.
 
-## Transactions
-
-Transactions represent financial ledger events. They can be project-wide or tied to a specific unit.
-
-Core transaction fields:
-
-- side/type
-- scope: ProjectWide or PerUnit
-- amount
-- date
-- payment mode
-- vendor or party name
-- work package
-- due date
-- settlement status
-- description
-
-## Buyer Receipts
-
-Buyer receipts are per-unit transactions that reduce buyer balance due. The app separates cash received from agreed sale value so collections and revenue are not confused.
-
-## Vendor Invoices
-
-Vendor invoices represent payable exposure. Project-wide invoices are allocated across units for economic reporting. Per-unit invoices attach directly to a flat.
-
-## Vendor Payments
-
-Vendor payments represent cash paid to vendors. Vendor-level matching prevents a payment to one vendor from accidentally offsetting another vendor's invoice.
-
-## Landowner Reimbursables
-
-Landowner reimbursable transactions track costs incurred for landowner units and any reimbursements received. This helps builders keep JV or landowner settlement conversations explicit.
-
-## Audit Logs
-
-Audit logs capture material edits to financial transactions, including old value, new value, changed field, reason, timestamp, and user marker. They are designed to support audit-aware operations rather than silent overwrites.
+See [deployment-notes.md](deployment-notes.md) for migration, membership provisioning, accounting interpretation and known product boundaries.

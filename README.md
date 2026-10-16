@@ -35,7 +35,9 @@ Builder Ledger India turns those workflows into a focused finance operations sys
 - Landowner reimbursable expense tracking
 - Unit cost allocation by total built-up area
 - Unit-level margin visibility
-- Dashboard KPIs for agreed sales, collections, cost exposure, payables, and projected profit
+- Dashboard KPIs for agreed sales, cleared collections, cost exposure, payables, buyer credits and contracted sales less recorded exposure
+- Authenticated project roles, immutable server audit history and versioned edits
+- Invoice-linked payments, idempotent submissions and safe transaction voiding
 - Audit-aware transaction updates and soft deletes
 - Local branding through environment variables or runtime logo upload
 
@@ -140,20 +142,26 @@ VITE_APP_LOGO_URL=
 
 ## Supabase Setup
 
-For Supabase-backed mode:
+For a new database, run `sql/supabase_setup.sql`, provision a confirmed Supabase Auth user, and deploy with `VITE_DEMO_MODE=false` plus your public Supabase URL/key. Sign in to create a project; its creator becomes its owner.
 
-1. Create a Supabase project.
-2. Run `sql/supabase_setup.sql` in the Supabase SQL Editor.
-3. Set `VITE_DEMO_MODE=false`.
-4. Add your Supabase URL and public anon or publishable key to `.env.local`.
+For an existing database, back up first, run `sql/preflight_finance_hardening.sql`, then apply `sql/20261016_finance_hardening.sql` and assign users to existing projects. The frontend now requires authentication and the secured schema. **Do not disable RLS.** The old bypass scripts are retired.
 
-Local/private development helper:
+Read [deployment and migration instructions](docs/deployment-notes.md) before upgrading. They cover role provisioning, legacy data review and post-deployment checks. Never expose a service-role/secret key in the frontend.
 
-```text
-sql/supabase_local_rls_fix.sql
+## Verification
+
+Use Node 24 (minimum 22.12).
+
+```bash
+npm ci
+npm run check
+npm run test:dashboard
+npx playwright install chromium
+npm run test:e2e
+npm audit
 ```
 
-Disabling RLS is acceptable only for local/private testing. Do not deploy a public Supabase-backed app with RLS disabled. Never expose `service_role` or secret keys in the frontend. Review `sql/supabase_production_rls_policies.sql` before production.
+Tests cover financial reconciliation, paise allocation, pending cash, credits, project isolation, idempotency, stale edits, permissions, atomic audit records, fresh/upgrade migrations, 1,000+ row snapshots, authentication and browser workflows. GitHub Actions runs these checks on pushes and pull requests. `npm run check:supabase` additionally verifies a configured live backend; see the deployment guide for its authenticated token requirement.
 
 ## Privacy And Data Safety
 
@@ -184,13 +192,10 @@ find . -name '*.xlsx' -o -name '*.csv' -o -name '*.pdf' -o -name '*.docx'
 
 ## Roadmap
 
-- Authentication and role-based access control
-- Production-ready tenant-based RLS policies
 - CSV import templates for units and opening ledgers
 - Exportable project finance reports
 - Aging reports for buyer dues and vendor payables
 - Screenshot-backed demo walkthrough
-- CI workflow for build, dashboard tests, and privacy scan
 
 ## Resume Summary
 

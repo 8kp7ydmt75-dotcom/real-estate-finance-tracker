@@ -27,7 +27,7 @@ Users deploying their own version should:
 - Store credentials in local or hosted environment variables
 - Use only public anon or publishable keys in the frontend
 - Keep service-role keys on trusted backend infrastructure only
-- Enable RLS and write tenant-aware policies before public production use
+- Keep the supplied project-member RLS policies enabled; provision authenticated users and project memberships
 
 ## Local Branding
 

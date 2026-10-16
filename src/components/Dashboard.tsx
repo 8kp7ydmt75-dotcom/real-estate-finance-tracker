@@ -1,6 +1,14 @@
+import { businessDate, reconcileVendorLedger } from '../utils/ledger';
+import { confirmAction } from '../utils/confirmAction';
 import React, { useMemo, useState } from 'react';
 import { useApp } from '../context/appContext';
-import { computeDashboardMetrics, formatCurrency, getUnitCode, getUnitKey, recomputeUnitTotals } from '../utils/utils';
+import {
+  computeDashboardMetrics,
+  formatCurrency,
+  getUnitCode,
+  getUnitKey,
+  recomputeUnitTotals,
+} from '../utils/utils';
 import {
   ArrowDownRight,
   ArrowUpRight,
@@ -23,7 +31,15 @@ type QuickAction = 'transaction' | 'collection' | null;
 const DASHBOARD_TABS: DashboardTab[] = ['Overview', 'Units', 'Costs', 'Collections', 'JV Summary'];
 
 const Dashboard: React.FC = () => {
-  const { activeProject, units, transactions, addTransaction, updateTransaction, deleteTransaction } = useApp();
+  const {
+    canEdit,
+    activeProject,
+    units,
+    transactions,
+    addTransaction,
+    updateTransaction,
+    deleteTransaction,
+  } = useApp();
   const [viewMode, setViewMode] = useState<'Developer' | 'Engineering'>('Developer');
   const [activeTab, setActiveTab] = useState<DashboardTab>('Overview');
   const [quickAction, setQuickAction] = useState<QuickAction>(null);
@@ -32,23 +48,29 @@ const Dashboard: React.FC = () => {
   const unitTotals = useMemo(() => recomputeUnitTotals(units, transactions), [units, transactions]);
   const dashboardMetrics = useMemo(
     () => computeDashboardMetrics(units, unitTotals, transactions),
-    [units, unitTotals, transactions]
+    [units, unitTotals, transactions],
   );
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = businessDate();
 
   const unitLabelById = useMemo(
-    () => Object.fromEntries(units.filter(unit => unit.id).map(unit => [unit.id!, getUnitCode(unit)])),
-    [units]
+    () =>
+      Object.fromEntries(
+        units.filter((unit) => unit.id).map((unit) => [unit.id!, getUnitCode(unit)]),
+      ),
+    [units],
   );
   const getTransactionUnitLabel = (transaction: Transaction) =>
     transaction.unitId ? unitLabelById[transaction.unitId] || transaction.unitId : undefined;
 
-  const unitStats = useMemo(() => units.map(unit => ({ unit, totals: unitTotals[getUnitKey(unit)] })), [units, unitTotals]);
+  const unitStats = useMemo(
+    () => units.map((unit) => ({ unit, totals: unitTotals[getUnitKey(unit)] })),
+    [units, unitTotals],
+  );
 
   const developerUnits = useMemo(
     () => unitStats.filter(({ unit }) => unit.ownershipType === OwnershipType.Developer),
-    [unitStats]
+    [unitStats],
   );
 
   const soldUnits = developerUnits.filter(({ unit }) => unit.isSold);
@@ -56,48 +78,54 @@ const Dashboard: React.FC = () => {
 
   const receivableUnits = useMemo(
     () => developerUnits.filter(({ totals }) => totals.buyerBalanceDue > 0),
-    [developerUnits]
+    [developerUnits],
   );
 
   const topReceivables = useMemo(
-    () => [...receivableUnits]
-      .sort((a, b) => b.totals.buyerBalanceDue - a.totals.buyerBalanceDue)
-      .slice(0, 5),
-    [receivableUnits]
+    () =>
+      [...receivableUnits]
+        .sort((a, b) => b.totals.buyerBalanceDue - a.totals.buyerBalanceDue)
+        .slice(0, 5),
+    [receivableUnits],
   );
 
+  const invoiceOutstanding = useMemo(
+    () => reconcileVendorLedger(transactions).invoiceOutstanding,
+    [transactions],
+  );
   const pendingVendorInvoices = useMemo(
-    () => transactions
-      .filter((transaction) => transaction.side === TransactionSide.VendorInvoice && !transaction.isSettled)
-      .sort((a, b) => {
-        const leftDate = a.dueDate || a.date;
-        const rightDate = b.dueDate || b.date;
-        return leftDate.localeCompare(rightDate);
-      }),
-    [transactions]
+    () =>
+      transactions
+        .filter(
+          (transaction) =>
+            transaction.side === TransactionSide.VendorInvoice &&
+            (invoiceOutstanding[transaction.id!] ?? transaction.amount) > 0,
+        )
+        .sort((a, b) => {
+          const leftDate = a.dueDate || a.date;
+          const rightDate = b.dueDate || b.date;
+          return leftDate.localeCompare(rightDate);
+        }),
+    [transactions, invoiceOutstanding],
   );
 
   const overdueInvoices = useMemo(
-    () => pendingVendorInvoices
-      .filter((transaction) => (
-        Boolean(transaction.dueDate)
-        && transaction.dueDate! < today
-      ))
-      .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || '')),
-    [pendingVendorInvoices, today]
+    () =>
+      pendingVendorInvoices
+        .filter((transaction) => Boolean(transaction.dueDate) && transaction.dueDate! < today)
+        .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || '')),
+    [pendingVendorInvoices, today],
   );
 
   const recentTransactions = useMemo(
-    () => [...transactions]
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-      .slice(0, 8),
-    [transactions]
+    () =>
+      [...transactions]
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+        .slice(0, 8),
+    [transactions],
   );
 
-  const pendingCollections = useMemo(
-    () => receivableUnits.length,
-    [receivableUnits]
-  );
+  const pendingCollections = useMemo(() => receivableUnits.length, [receivableUnits]);
 
   const kpis = [
     {
@@ -110,7 +138,7 @@ const Dashboard: React.FC = () => {
     {
       title: 'Sold Units',
       value: dashboardMetrics.developer.soldUnits.toString(),
-      description: 'Buyer assigned units',
+      description: 'Confirmed sale agreements',
       icon: <Landmark size={18} />,
       tone: 'emerald' as const,
     },
@@ -123,8 +151,15 @@ const Dashboard: React.FC = () => {
     },
     {
       title: 'Total Collections',
-      value: formatCurrency(transactions.filter((transaction) => transaction.side === TransactionSide.BuyerReceipt).reduce((sum, transaction) => sum + transaction.amount, 0)),
-      description: 'Buyer receipts logged',
+      value: formatCurrency(
+        transactions
+          .filter(
+            (transaction) =>
+              transaction.side === TransactionSide.BuyerReceipt && transaction.isSettled,
+          )
+          .reduce((sum, transaction) => sum + transaction.amount, 0),
+      ),
+      description: 'Cleared buyer receipts',
       icon: <HandCoins size={18} />,
       tone: 'emerald' as const,
     },
@@ -138,7 +173,7 @@ const Dashboard: React.FC = () => {
     {
       title: 'Total Vendor Spend',
       value: formatCurrency(dashboardMetrics.developer.vendorPaid),
-      description: 'Vendor payments logged',
+      description: 'Cleared vendor payments',
       icon: <ArrowUpRight size={18} />,
       tone: 'rose' as const,
     },
@@ -180,9 +215,12 @@ const Dashboard: React.FC = () => {
               Project overview
             </div>
             <div className="space-y-2">
-              <h1 className="text-[2rem] font-semibold tracking-tight text-slate-950 md:text-[2.35rem]">{activeProject?.name || 'Project'} operations dashboard</h1>
+              <h1 className="text-[2rem] font-semibold tracking-tight text-slate-950 md:text-[2.35rem]">
+                {activeProject?.name || 'Project'} operations dashboard
+              </h1>
               <p className="max-w-3xl text-sm leading-6 text-slate-600">
-                A restrained internal dashboard for inventory, collections, vendor exposure, and project controls.
+                Cash totals include cleared transactions only. Pending cash is excluded. Costs
+                include invoices and unapplied vendor advances.
               </p>
             </div>
           </div>
@@ -190,11 +228,27 @@ const Dashboard: React.FC = () => {
           <div className="flex flex-col gap-3 lg:min-w-[22rem]">
             <div className="dashboard-toolbar p-3">
               <div className="flex flex-wrap items-center gap-2">
-                <button type="button" className="dashboard-primary-button" onClick={() => { setEditingTransaction(null); setQuickAction('transaction'); }}>
+                <button
+                  disabled={!canEdit}
+                  type="button"
+                  className="dashboard-primary-button"
+                  onClick={() => {
+                    setEditingTransaction(null);
+                    setQuickAction('transaction');
+                  }}
+                >
                   <Receipt size={16} />
                   Add Transaction
                 </button>
-                <button type="button" className="dashboard-secondary-button" onClick={() => { setEditingTransaction(null); setQuickAction('collection'); }}>
+                <button
+                  disabled={!canEdit}
+                  type="button"
+                  className="dashboard-secondary-button"
+                  onClick={() => {
+                    setEditingTransaction(null);
+                    setQuickAction('collection');
+                  }}
+                >
                   <Banknote size={16} />
                   Add Collection
                 </button>
@@ -202,7 +256,9 @@ const Dashboard: React.FC = () => {
             </div>
 
             <div className="dashboard-toolbar p-3">
-              <p className="mb-2 text-xs font-medium uppercase tracking-[0.22em] text-slate-500">Allocation lens</p>
+              <p className="mb-2 text-xs font-medium uppercase tracking-[0.22em] text-slate-500">
+                Allocation lens
+              </p>
               <div className="dashboard-segmented-control inline-flex w-full">
                 {(['Developer', 'Engineering'] as const).map((mode) => (
                   <button
@@ -220,7 +276,10 @@ const Dashboard: React.FC = () => {
         </div>
       </header>
 
-      <section aria-label="Key performance indicators" className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <section
+        aria-label="Key performance indicators"
+        className="grid gap-3 md:grid-cols-2 xl:grid-cols-3"
+      >
         {kpis.map((kpi) => (
           <KpiCard key={kpi.title} {...kpi} />
         ))}
@@ -233,7 +292,9 @@ const Dashboard: React.FC = () => {
               <p className="dashboard-eyebrow">Transactions</p>
               <h2 className="dashboard-title">Recent transactions</h2>
             </div>
-            <span className="dashboard-badge dashboard-badge-slate">{recentTransactions.length} latest entries</span>
+            <span className="dashboard-badge dashboard-badge-slate">
+              {recentTransactions.length} latest entries
+            </span>
           </header>
 
           <div className="overflow-x-auto">
@@ -252,60 +313,83 @@ const Dashboard: React.FC = () => {
               <tbody>
                 {recentTransactions.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="empty-state-cell">No transactions recorded yet.</td>
+                    <td colSpan={7} className="empty-state-cell">
+                      No transactions recorded yet.
+                    </td>
                   </tr>
-                ) : recentTransactions.map((transaction) => (
-                  <tr key={transaction.id}>
-                    <td className="whitespace-nowrap text-slate-600">{transaction.date}</td>
-                    <td>
-                      <StatusBadge tone={getTransactionTone(transaction.side)}>
-                        {transaction.side}
-                      </StatusBadge>
-                    </td>
-                    <td>
-                      <span className={`dashboard-badge ${(transaction.scope ?? TransactionScope.ProjectWide) === TransactionScope.ProjectWide ? 'dashboard-badge-indigo' : 'dashboard-badge-slate'}`}>
-                        {(transaction.scope ?? TransactionScope.ProjectWide) === TransactionScope.ProjectWide ? 'Project wide' : 'Per unit'}
-                      </span>
-                    </td>
-                    <td className="font-medium text-slate-900">{getTransactionUnitLabel(transaction) || '—'}</td>
-                    <td>
-                      <div className="space-y-1">
-                        <p className="font-medium text-slate-800">{transaction.vendorName || transaction.description || 'Buyer receipt'}</p>
-                        <p className="text-xs text-slate-500">{transaction.workPackage || transaction.description || 'No extra note'}</p>
-                      </div>
-                    </td>
-                    <td className="text-right font-semibold text-slate-900">{formatCurrency(transaction.amount)}</td>
-                    <td className="text-right">
-                      <details className="action-menu inline-block text-left">
-                        <summary className="action-menu-trigger" aria-label={`Actions for ${transaction.id || 'transaction'}`}>
-                          <MoreHorizontal size={16} />
-                        </summary>
-                        <div className="action-menu-panel">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingTransaction(transaction);
-                              setQuickAction('transaction');
-                            }}
-                          >
-                            Edit transaction
-                          </button>
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              if (window.confirm('Delete this transaction?')) {
-                                const reason = window.prompt('Delete reason (required for audit trail):', 'Entered in error') || 'Entered in error';
-                                await deleteTransaction(transaction.id, reason);
-                              }
-                            }}
-                          >
-                            Delete transaction
-                          </button>
+                ) : (
+                  recentTransactions.map((transaction) => (
+                    <tr key={transaction.id}>
+                      <td className="whitespace-nowrap text-slate-600">{transaction.date}</td>
+                      <td>
+                        <StatusBadge tone={getTransactionTone(transaction.side)}>
+                          {transaction.side}
+                        </StatusBadge>
+                      </td>
+                      <td>
+                        <span
+                          className={`dashboard-badge ${(transaction.scope ?? TransactionScope.ProjectWide) === TransactionScope.ProjectWide ? 'dashboard-badge-indigo' : 'dashboard-badge-slate'}`}
+                        >
+                          {(transaction.scope ?? TransactionScope.ProjectWide) ===
+                          TransactionScope.ProjectWide
+                            ? 'Project wide'
+                            : 'Per unit'}
+                        </span>
+                      </td>
+                      <td className="font-medium text-slate-900">
+                        {getTransactionUnitLabel(transaction) || '—'}
+                      </td>
+                      <td>
+                        <div className="space-y-1">
+                          <p className="font-medium text-slate-800">
+                            {transaction.vendorName || transaction.description || 'Buyer receipt'}
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            {transaction.workPackage || transaction.description || 'No extra note'}
+                          </p>
                         </div>
-                      </details>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="text-right font-semibold text-slate-900">
+                        {formatCurrency(transaction.amount)}
+                      </td>
+                      <td className="text-right">
+                        <details className="action-menu inline-block text-left">
+                          <summary
+                            className="action-menu-trigger"
+                            aria-label={`Actions for ${transaction.id || 'transaction'}`}
+                          >
+                            <MoreHorizontal size={16} />
+                          </summary>
+                          <div className="action-menu-panel">
+                            <button
+                              disabled={!canEdit}
+                              type="button"
+                              onClick={() => {
+                                setEditingTransaction(transaction);
+                                setQuickAction('transaction');
+                              }}
+                            >
+                              Edit transaction
+                            </button>
+                            <button
+                              disabled={!canEdit}
+                              type="button"
+                              onClick={async () => {
+                                await confirmAction(
+                                  'Void this transaction? Its history will be retained.',
+                                  'Entered in error',
+                                  (reason) => deleteTransaction(transaction.id, reason),
+                                );
+                              }}
+                            >
+                              Delete transaction
+                            </button>
+                          </div>
+                        </details>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -322,36 +406,72 @@ const Dashboard: React.FC = () => {
             </header>
 
             <div className="space-y-3">
-              <AlertStat label="Overdue invoices" value={overdueInvoices.length.toString()} tone={overdueInvoices.length > 0 ? 'rose' : 'emerald'} />
-              <AlertStat label="Units with buyer dues" value={pendingCollections.toString()} tone={pendingCollections > 0 ? 'amber' : 'slate'} />
-              <AlertStat label="Pending vendor invoices" value={pendingVendorInvoices.length.toString()} tone={pendingVendorInvoices.length > 0 ? 'amber' : 'slate'} />
+              <AlertStat
+                label="Overdue invoices"
+                value={overdueInvoices.length.toString()}
+                tone={overdueInvoices.length > 0 ? 'rose' : 'emerald'}
+              />
+              <AlertStat
+                label="Units with buyer dues"
+                value={pendingCollections.toString()}
+                tone={pendingCollections > 0 ? 'amber' : 'slate'}
+              />
+              <AlertStat
+                label="Pending vendor invoices"
+                value={pendingVendorInvoices.length.toString()}
+                tone={pendingVendorInvoices.length > 0 ? 'amber' : 'slate'}
+              />
             </div>
 
             <div className="mt-5 space-y-3 border-t border-slate-200 pt-5">
               <div>
                 <h3 className="text-sm font-semibold text-slate-900">Vendor invoice queue</h3>
-                <p className="mt-1 text-xs text-slate-500">Unsettled vendor invoices are shown here. Overdue ones are highlighted.</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Unsettled vendor invoices are shown here. Overdue ones are highlighted.
+                </p>
               </div>
 
               <div className="space-y-2">
                 {pendingVendorInvoices.length === 0 ? (
-                  <p className="rounded-md border border-dashed border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-500">No pending vendor invoices right now.</p>
-                ) : pendingVendorInvoices.slice(0, 4).map((transaction) => {
-                  const isOverdue = Boolean(transaction.dueDate && transaction.dueDate < today);
-                  return (
-                  <div key={transaction.id} className={`rounded-md border px-3 py-3 ${isOverdue ? 'border-rose-200 bg-rose-50' : 'border-amber-200 bg-amber-50'}`}>
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className={`text-sm font-semibold ${isOverdue ? 'text-rose-900' : 'text-amber-900'}`}>{transaction.vendorName || 'Vendor invoice'}</p>
-                        <p className={`text-xs ${isOverdue ? 'text-rose-700' : 'text-amber-700'}`}>
-                          {transaction.dueDate ? `${isOverdue ? 'Overdue' : 'Due'} ${transaction.dueDate}` : `Invoice date ${transaction.date}`} • {getTransactionUnitLabel(transaction) || 'Project wide'}
-                        </p>
+                  <p className="rounded-md border border-dashed border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-500">
+                    No pending vendor invoices right now.
+                  </p>
+                ) : (
+                  pendingVendorInvoices.slice(0, 4).map((transaction) => {
+                    const isOverdue = Boolean(transaction.dueDate && transaction.dueDate < today);
+                    return (
+                      <div
+                        key={transaction.id}
+                        className={`rounded-md border px-3 py-3 ${isOverdue ? 'border-rose-200 bg-rose-50' : 'border-amber-200 bg-amber-50'}`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p
+                              className={`text-sm font-semibold ${isOverdue ? 'text-rose-900' : 'text-amber-900'}`}
+                            >
+                              {transaction.vendorName || 'Vendor invoice'}
+                            </p>
+                            <p
+                              className={`text-xs ${isOverdue ? 'text-rose-700' : 'text-amber-700'}`}
+                            >
+                              {transaction.dueDate
+                                ? `${isOverdue ? 'Overdue' : 'Due'} ${transaction.dueDate}`
+                                : `Invoice date ${transaction.date}`}{' '}
+                              • {getTransactionUnitLabel(transaction) || 'Project wide'}
+                            </p>
+                          </div>
+                          <span
+                            className={`text-sm font-semibold ${isOverdue ? 'text-rose-700' : 'text-amber-700'}`}
+                          >
+                            {formatCurrency(
+                              invoiceOutstanding[transaction.id!] ?? transaction.amount,
+                            )}
+                          </span>
+                        </div>
                       </div>
-                      <span className={`text-sm font-semibold ${isOverdue ? 'text-rose-700' : 'text-amber-700'}`}>{formatCurrency(transaction.amount)}</span>
-                    </div>
-                  </div>
-                );
-                })}
+                    );
+                  })
+                )}
               </div>
             </div>
           </article>
@@ -365,10 +485,36 @@ const Dashboard: React.FC = () => {
             </header>
 
             <div className="grid gap-3">
-              <BalanceItem label="Buyer receivable" value={formatCurrency(dashboardMetrics.developer.buyerReceivable)} tone="emerald" />
-              <BalanceItem label="Vendor payable" value={formatCurrency(dashboardMetrics.developer.vendorPayable)} tone="rose" />
-              <BalanceItem label="Vendor paid to date" value={formatCurrency(dashboardMetrics.developer.vendorPaid)} tone="amber" />
-              <BalanceItem label="Projected profit" value={formatCurrency(dashboardMetrics.developer.profit)} tone={dashboardMetrics.developer.profit >= 0 ? 'blue' : 'rose'} />
+              <BalanceItem
+                label="Buyer receivable"
+                value={formatCurrency(dashboardMetrics.developer.buyerReceivable)}
+                tone="emerald"
+              />
+              <BalanceItem
+                label="Buyer credit / overpayment"
+                value={formatCurrency(dashboardMetrics.developer.buyerCredit)}
+                tone="blue"
+              />
+              <BalanceItem
+                label="Unallocated cost"
+                value={formatCurrency(dashboardMetrics.developer.unallocatedCost)}
+                tone="amber"
+              />
+              <BalanceItem
+                label="Vendor payable"
+                value={formatCurrency(dashboardMetrics.developer.vendorPayable)}
+                tone="rose"
+              />
+              <BalanceItem
+                label="Vendor paid to date"
+                value={formatCurrency(dashboardMetrics.developer.vendorPaid)}
+                tone="amber"
+              />
+              <BalanceItem
+                label="Contracted sales less exposure"
+                value={formatCurrency(dashboardMetrics.developer.profit)}
+                tone={dashboardMetrics.developer.profit >= 0 ? 'blue' : 'rose'}
+              />
             </div>
           </article>
         </aside>
@@ -398,28 +544,80 @@ const Dashboard: React.FC = () => {
         <div className="pt-6">
           {activeTab === 'Overview' && (
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <InfoCard title="Scope lens" value={viewMode === 'Developer' ? 'Developer economic view' : 'Engineering all-units view'} description="Switching the lens changes only which existing metrics are displayed." />
-              <InfoCard title="Agreed sales value" value={formatCurrency(dashboardMetrics.developer.revenue)} description="Full agreed value of sold units, not cash received." />
-              <InfoCard title="Cash received" value={formatCurrency(dashboardMetrics.developer.buyerCollections)} description="Buyer receipts actually logged so far." />
-              <InfoCard title="Projected profit" value={formatCurrency(dashboardMetrics.developer.profit)} description="Agreed sales minus vendor cost exposure." />
+              <InfoCard
+                title="Scope lens"
+                value={
+                  viewMode === 'Developer'
+                    ? 'Developer economic view'
+                    : 'Engineering all-units view'
+                }
+                description="Switching the lens changes only which existing metrics are displayed."
+              />
+              <InfoCard
+                title="Agreed sales value"
+                value={formatCurrency(dashboardMetrics.developer.revenue)}
+                description="Full agreed value of sold units, not cash received."
+              />
+              <InfoCard
+                title="Cash received"
+                value={formatCurrency(dashboardMetrics.developer.buyerCollections)}
+                description="Buyer receipts actually logged so far."
+              />
+              <InfoCard
+                title="Contracted sales less exposure"
+                value={formatCurrency(dashboardMetrics.developer.profit)}
+                description="Confirmed sales less recorded vendor invoices and advances. Excludes future sales and future costs; this is not forecast profit."
+              />
             </div>
           )}
 
           {activeTab === 'Units' && (
             <div className="grid gap-4 lg:grid-cols-3">
-              <InfoCard title="Developer units" value={dashboardMetrics.developer.totalUnits.toString()} description="Total units included in developer metrics." />
-              <InfoCard title="Sold inventory" value={soldUnits.length.toString()} description="Units currently marked sold." />
-              <InfoCard title="Available inventory" value={availableUnits.length.toString()} description="Unsold developer units still available." />
+              <InfoCard
+                title="Developer units"
+                value={dashboardMetrics.developer.totalUnits.toString()}
+                description="Total units included in developer metrics."
+              />
+              <InfoCard
+                title="Sold inventory"
+                value={soldUnits.length.toString()}
+                description="Units currently marked sold."
+              />
+              <InfoCard
+                title="Available inventory"
+                value={availableUnits.length.toString()}
+                description="Unsold developer units still available."
+              />
             </div>
           )}
 
           {activeTab === 'Costs' && (
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <InfoCard title="Developer cost" value={formatCurrency(dashboardMetrics.developer.cost)} description="Economic allocation for developer-owned units." />
-              <InfoCard title="Vendor paid" value={formatCurrency(dashboardMetrics.developer.vendorPaid)} description="Actual vendor cash paid to date." />
-              <InfoCard title="Vendor payable" value={formatCurrency(dashboardMetrics.developer.vendorPayable)} description="Unpaid vendor invoices after matching by vendor." />
-              <InfoCard title="Engineering total cost" value={formatCurrency(dashboardMetrics.engineering.totalCost)} description={`${dashboardMetrics.engineering.totalUnits} units in all-units allocation.`} />
-              <InfoCard title="Engineering cost / sq ft" value={formatCurrency(Math.round(dashboardMetrics.engineering.costPerSqFt))} description={`${dashboardMetrics.engineering.totalArea.toFixed(0)} sqft total built-up area`} />
+              <InfoCard
+                title="Developer cost"
+                value={formatCurrency(dashboardMetrics.developer.cost)}
+                description="Economic allocation for developer-owned units."
+              />
+              <InfoCard
+                title="Vendor paid"
+                value={formatCurrency(dashboardMetrics.developer.vendorPaid)}
+                description="Actual vendor cash paid to date."
+              />
+              <InfoCard
+                title="Vendor payable"
+                value={formatCurrency(dashboardMetrics.developer.vendorPayable)}
+                description="Unpaid vendor invoices after matching by vendor."
+              />
+              <InfoCard
+                title="Engineering total cost"
+                value={formatCurrency(dashboardMetrics.engineering.totalCost)}
+                description={`${dashboardMetrics.engineering.totalUnits} units in all-units allocation.`}
+              />
+              <InfoCard
+                title="Engineering cost / sq ft"
+                value={formatCurrency(Math.round(dashboardMetrics.engineering.costPerSqFt))}
+                description={`${dashboardMetrics.engineering.totalArea.toFixed(0)} sqft total built-up area`}
+              />
             </div>
           )}
 
@@ -430,22 +628,47 @@ const Dashboard: React.FC = () => {
                 <div className="mt-4 space-y-3">
                   {topReceivables.length === 0 ? (
                     <p className="text-sm text-slate-500">No receivables pending.</p>
-                  ) : topReceivables.map(({ unit, totals }) => (
-                    <div key={getUnitKey(unit)} className="flex items-start justify-between gap-4 rounded-md border border-slate-200 bg-white px-3 py-3">
-                      <div>
-                        <p className="font-semibold text-slate-900">{getUnitCode(unit)}</p>
-                        <p className="text-xs text-slate-500">{unit.buyerName || 'Buyer not assigned'}</p>
+                  ) : (
+                    topReceivables.map(({ unit, totals }) => (
+                      <div
+                        key={getUnitKey(unit)}
+                        className="flex items-start justify-between gap-4 rounded-md border border-slate-200 bg-white px-3 py-3"
+                      >
+                        <div>
+                          <p className="font-semibold text-slate-900">{getUnitCode(unit)}</p>
+                          <p className="text-xs text-slate-500">
+                            {unit.buyerName || 'Buyer not assigned'}
+                          </p>
+                        </div>
+                        <span className="text-sm font-semibold text-emerald-700">
+                          {formatCurrency(totals.buyerBalanceDue)}
+                        </span>
                       </div>
-                      <span className="text-sm font-semibold text-emerald-700">{formatCurrency(totals.buyerBalanceDue)}</span>
-                    </div>
-                  ))}
+                    ))
+                  )}
                 </div>
               </article>
               <article className="dashboard-subtle-card">
                 <h3 className="text-sm font-semibold text-slate-900">Collections posture</h3>
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <BalanceItem label="Buyer receipts" value={formatCurrency(transactions.filter((transaction) => transaction.side === TransactionSide.BuyerReceipt).reduce((sum, transaction) => sum + transaction.amount, 0))} tone="emerald" />
-                  <BalanceItem label="Units with buyer dues" value={pendingCollections.toString()} tone="amber" />
+                  <BalanceItem
+                    label="Buyer receipts"
+                    value={formatCurrency(
+                      transactions
+                        .filter(
+                          (transaction) =>
+                            transaction.side === TransactionSide.BuyerReceipt &&
+                            transaction.isSettled,
+                        )
+                        .reduce((sum, transaction) => sum + transaction.amount, 0),
+                    )}
+                    tone="emerald"
+                  />
+                  <BalanceItem
+                    label="Units with buyer dues"
+                    value={pendingCollections.toString()}
+                    tone="amber"
+                  />
                 </div>
               </article>
             </div>
@@ -456,21 +679,51 @@ const Dashboard: React.FC = () => {
               <article className="dashboard-subtle-card">
                 <h3 className="text-sm font-semibold text-slate-900">Developer summary</h3>
                 <dl className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <DetailStat label="Agreed sales" value={formatCurrency(dashboardMetrics.developer.revenue)} />
-                  <DetailStat label="Cash received" value={formatCurrency(dashboardMetrics.developer.buyerCollections)} />
-                  <DetailStat label="Cost" value={formatCurrency(dashboardMetrics.developer.cost)} />
-                  <DetailStat label="Projected profit" value={formatCurrency(dashboardMetrics.developer.profit)} />
-                  <DetailStat label="Vendor payable" value={formatCurrency(dashboardMetrics.developer.vendorPayable)} />
-                  <DetailStat label="Vendor paid to date" value={formatCurrency(dashboardMetrics.developer.vendorPaid)} />
+                  <DetailStat
+                    label="Agreed sales"
+                    value={formatCurrency(dashboardMetrics.developer.revenue)}
+                  />
+                  <DetailStat
+                    label="Cash received"
+                    value={formatCurrency(dashboardMetrics.developer.buyerCollections)}
+                  />
+                  <DetailStat
+                    label="Cost"
+                    value={formatCurrency(dashboardMetrics.developer.cost)}
+                  />
+                  <DetailStat
+                    label="Contracted sales less exposure"
+                    value={formatCurrency(dashboardMetrics.developer.profit)}
+                  />
+                  <DetailStat
+                    label="Vendor payable"
+                    value={formatCurrency(dashboardMetrics.developer.vendorPayable)}
+                  />
+                  <DetailStat
+                    label="Vendor paid to date"
+                    value={formatCurrency(dashboardMetrics.developer.vendorPaid)}
+                  />
                 </dl>
               </article>
               <article className="dashboard-subtle-card">
                 <h3 className="text-sm font-semibold text-slate-900">Engineering summary</h3>
                 <dl className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <DetailStat label="All units" value={dashboardMetrics.engineering.totalUnits.toString()} />
-                  <DetailStat label="Total built-up area" value={`${dashboardMetrics.engineering.totalArea.toFixed(0)} sqft`} />
-                  <DetailStat label="Total cost" value={formatCurrency(dashboardMetrics.engineering.totalCost)} />
-                  <DetailStat label="Cost / sq ft" value={formatCurrency(Math.round(dashboardMetrics.engineering.costPerSqFt))} />
+                  <DetailStat
+                    label="All units"
+                    value={dashboardMetrics.engineering.totalUnits.toString()}
+                  />
+                  <DetailStat
+                    label="Total built-up area"
+                    value={`${dashboardMetrics.engineering.totalArea.toFixed(0)} sqft`}
+                  />
+                  <DetailStat
+                    label="Total cost"
+                    value={formatCurrency(dashboardMetrics.engineering.totalCost)}
+                  />
+                  <DetailStat
+                    label="Cost / sq ft"
+                    value={formatCurrency(Math.round(dashboardMetrics.engineering.costPerSqFt))}
+                  />
                 </dl>
               </article>
             </div>
@@ -506,7 +759,13 @@ const toneClasses = {
   indigo: 'text-indigo-700 bg-indigo-50 border-indigo-200',
 };
 
-const KpiCard: React.FC<{ title: string; value: string; description: string; icon: React.ReactNode; tone: keyof typeof toneClasses }> = ({ title, value, description, icon, tone }) => (
+const KpiCard: React.FC<{
+  title: string;
+  value: string;
+  description: string;
+  icon: React.ReactNode;
+  tone: keyof typeof toneClasses;
+}> = ({ title, value, description, icon, tone }) => (
   <article className="dashboard-surface dashboard-kpi-card">
     <div className="flex items-start justify-between gap-4">
       <div>
@@ -514,32 +773,49 @@ const KpiCard: React.FC<{ title: string; value: string; description: string; ico
         <h2 className="mt-2 text-[1.8rem] font-semibold tracking-tight text-slate-950">{value}</h2>
         <p className="mt-1.5 text-sm text-slate-500">{description}</p>
       </div>
-      <div className={`inline-flex h-9 w-9 items-center justify-center rounded-md border ${toneClasses[tone]}`}>
+      <div
+        className={`inline-flex h-9 w-9 items-center justify-center rounded-md border ${toneClasses[tone]}`}
+      >
         {icon}
       </div>
     </div>
   </article>
 );
 
-const StatusBadge: React.FC<{ children: React.ReactNode; tone: keyof typeof toneClasses }> = ({ children, tone }) => (
-  <span className={`dashboard-badge ${toneClasses[tone]}`}>{children}</span>
-);
+const StatusBadge: React.FC<{ children: React.ReactNode; tone: keyof typeof toneClasses }> = ({
+  children,
+  tone,
+}) => <span className={`dashboard-badge ${toneClasses[tone]}`}>{children}</span>;
 
-const AlertStat: React.FC<{ label: string; value: string; tone: keyof typeof toneClasses }> = ({ label, value, tone }) => (
+const AlertStat: React.FC<{ label: string; value: string; tone: keyof typeof toneClasses }> = ({
+  label,
+  value,
+  tone,
+}) => (
   <div className="flex items-center justify-between rounded-md border border-slate-200 bg-slate-50 px-3 py-2.5">
     <span className="text-sm font-medium text-slate-700">{label}</span>
-    <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${toneClasses[tone]}`}>{value}</span>
+    <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${toneClasses[tone]}`}>
+      {value}
+    </span>
   </div>
 );
 
-const BalanceItem: React.FC<{ label: string; value: string; tone: keyof typeof toneClasses }> = ({ label, value, tone }) => (
+const BalanceItem: React.FC<{ label: string; value: string; tone: keyof typeof toneClasses }> = ({
+  label,
+  value,
+  tone,
+}) => (
   <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-3">
     <p className="text-xs font-medium uppercase tracking-[0.22em] text-slate-500">{label}</p>
     <p className={`mt-2 text-lg font-semibold ${toneClasses[tone].split(' ')[0]}`}>{value}</p>
   </div>
 );
 
-const InfoCard: React.FC<{ title: string; value: string; description: string }> = ({ title, value, description }) => (
+const InfoCard: React.FC<{ title: string; value: string; description: string }> = ({
+  title,
+  value,
+  description,
+}) => (
   <article className="dashboard-subtle-card">
     <p className="text-xs font-medium uppercase tracking-[0.22em] text-slate-500">{title}</p>
     <h3 className="mt-2.5 text-2xl font-semibold tracking-tight text-slate-950">{value}</h3>

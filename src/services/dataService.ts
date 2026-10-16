@@ -3,638 +3,447 @@ import {
   NewProjectInput,
   NewTransactionInput,
   NewUnitInput,
-  OwnershipType,
   Project,
   ProjectStats,
   Transaction,
   TransactionScope,
   TransactionSide,
-  Unit
+  Unit,
 } from '../types/types';
-import { assertPerUnitRequiresUnit } from '../validation/transactionValidation';
-import { getUnitCode, getUnitKey } from '../utils/utils';
+import { getUnitCode } from '../utils/utils';
+import { money } from '../utils/ledger';
+import { validateTransaction, validateUnit } from '../validation/financeValidation';
 import { demoProjects, demoTransactions, demoUnits } from '../data/demoData';
 
-const SYSTEM_USER = 'system';
-const demoState = {
-  projects: demoProjects.map(project => ({ ...project })),
-  units: demoUnits.map(unit => ({ ...unit })),
-  transactions: demoTransactions.map(transaction => ({ ...transaction }))
+export type ProjectRole = 'owner' | 'accountant' | 'viewer';
+export interface ProjectSnapshot {
+  units: Unit[];
+  transactions: Transaction[];
+  role: ProjectRole;
+}
+type DemoProject = ProjectSnapshot & { history: Set<string>; requests: Set<string> };
+const demoProjectsState = demoProjects.map((p) => ({ ...p, version: 1 }));
+const demoData = new Map<string, DemoProject>(
+  demoProjects.map((p, i) => [
+    p.id,
+    {
+      units: i === 0 ? demoUnits.map((u) => ({ ...u, version: 1 })) : [],
+      transactions: i === 0 ? demoTransactions.map((t) => ({ ...t, version: 1 })) : [],
+      role: 'owner',
+      requests: new Set(),
+      history: new Set(
+        i === 0 ? demoTransactions.flatMap((t) => (t.unitId ? [t.unitId] : [])) : [],
+      ),
+    },
+  ]),
+);
+const clone = <T>(value: T): T => structuredClone(value);
+const demo = (id: string) => {
+  const data = demoData.get(id);
+  if (!data) throw new Error('Project not found.');
+  return data;
 };
-
-const cloneProject = (project: Project): Project => ({ ...project });
-const cloneUnit = (unit: Unit): Unit => ({ ...unit });
-const cloneTransaction = (transaction: Transaction): Transaction => ({ ...transaction });
-const buildDemoId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-const isDemoProject = (projectId: string) => demoState.projects.some(project => project.id === projectId);
-
-const getDemoUnit = (projectId: string, unitRef?: string) => {
-  if (!unitRef || !isDemoProject(projectId)) return undefined;
-  return demoState.units.find(unit => unit.id === unitRef || getUnitCode(unit) === unitRef);
-};
-
-const ensureDemoProject = (projectId: string) => {
-  if (!isDemoProject(projectId)) throw new Error('Demo project was not found.');
-};
-
-export const SUPABASE_SCHEMA_SETUP_ERROR = 'Supabase database tables are not set up yet. Run sql/supabase_setup.sql in the Supabase SQL Editor, then refresh the app.';
-export const SUPABASE_RLS_SETUP_ERROR = 'Supabase Row Level Security is blocking this app. Run sql/supabase_local_rls_fix.sql in the Supabase SQL Editor, then refresh the app.';
-
-export const isSupabaseSchemaError = (error: unknown) => {
-  if (!error || typeof error !== 'object') return false;
-
-  const candidate = error as { code?: string; message?: string };
-  return candidate.code === 'PGRST205'
-    || candidate.message?.includes('schema cache') === true
-    || candidate.message?.includes("Could not find the table 'public.") === true;
-};
-
-const throwIfDataError = (error: unknown) => {
+export const SUPABASE_SCHEMA_SETUP_ERROR =
+  'Database setup is incomplete. Apply sql/supabase_setup.sql for a new database, or sql/20261016_finance_hardening.sql for an existing database.';
+export const SUPABASE_RLS_SETUP_ERROR =
+  'Access denied. Sign in with an account that is a member of this project. Ask the project owner to check your role.';
+export const isSupabaseSchemaError = (error: unknown) =>
+  typeof error === 'object' &&
+  error !== null &&
+  ['PGRST205', 'PGRST202', '42703'].includes(String((error as { code?: string }).code));
+const fail = (error: unknown): void => {
   if (!error) return;
-  if (isSupabaseSchemaError(error)) {
-    throw new Error(SUPABASE_SCHEMA_SETUP_ERROR);
-  }
-  if (typeof error === 'object' && (error as { message?: string }).message?.includes('row-level security policy')) {
-    throw new Error(SUPABASE_RLS_SETUP_ERROR);
-  }
-  throw error;
+  if (isSupabaseSchemaError(error)) throw new Error(SUPABASE_SCHEMA_SETUP_ERROR);
+  const e = error as { code?: string; message?: string };
+  if (e.code === '42501') throw new Error(SUPABASE_RLS_SETUP_ERROR);
+  throw new Error(e.message || 'Database request failed.');
 };
-
-const cleanPayload = (obj: Record<string, any>) =>
-  Object.fromEntries(Object.entries(obj).filter(([, value]) => value !== undefined));
-
-const toProject = (row: any): Project => ({
-  id: row.id,
-  code: row.code,
-  name: row.name,
-  location: row.location ?? null,
-  createdAt: row.created_at,
-  updatedAt: row.updated_at
+// Database rows are validated by PostgreSQL constraints; this is the sole mapping boundary.
+type Row = Record<string, any>;
+const toProject = (r: Row): Project => ({
+  id: r.id,
+  code: r.code,
+  name: r.name,
+  location: r.location,
+  createdAt: r.created_at,
+  updatedAt: r.updated_at,
+  version: r.version,
 });
-
-const normalizeProjectCode = (code: string) => code.trim().toUpperCase();
-
-const validateProjectInput = (input: NewProjectInput) => {
-  const code = normalizeProjectCode(input.code);
-  const name = input.name.trim();
-
-  if (!name) throw new Error('Project name is required.');
-  if (!code) throw new Error('Project code is required.');
-  if (!/^[A-Z0-9_]+$/.test(code)) {
-    throw new Error('Project code can only contain uppercase letters, numbers, and underscores.');
+export const toUnit = (r: Row): Unit => ({
+  id: r.id,
+  version: r.version,
+  tower: r.tower,
+  flatNumber: r.flat_no,
+  floor: Number(r.floor_no),
+  bhk: r.bhk,
+  carpetAreaSqFt: Number(r.carpet_area_sqft),
+  saleableAreaSqFt: Number(r.saleable_area_sqft),
+  ratePerSqFt: Number(r.rate_per_sqft),
+  amenitiesCost: Number(r.amenities_cost),
+  adjustments: Number(r.adjustments),
+  agreedPrice: Number(r.agreed_price),
+  buyerName: r.buyer_name || '',
+  buyerPhone: r.buyer_phone || '',
+  ownershipType: r.ownership_type,
+  handoverTarget: r.handover_date || undefined,
+  isSold: r.is_sold,
+  isSettled: r.is_settled,
+});
+export const buildUnitPayload = (projectId: string, u: Unit) => ({
+  project_id: projectId,
+  unit_code: getUnitCode(u),
+  tower: u.tower.trim(),
+  flat_no: u.flatNumber.trim(),
+  floor_no: u.floor,
+  bhk: u.bhk,
+  area_sqft: u.saleableAreaSqFt,
+  carpet_area_sqft: u.carpetAreaSqFt,
+  saleable_area_sqft: u.saleableAreaSqFt,
+  ownership_type: u.ownershipType,
+  buyer_name: u.buyerName.trim() || null,
+  buyer_phone: u.buyerPhone.trim() || null,
+  agreed_price:
+    u.agreedPrice ?? money(u.saleableAreaSqFt * u.ratePerSqFt + u.amenitiesCost + u.adjustments),
+  rate_per_sqft: u.ratePerSqFt,
+  amenities_cost: u.amenitiesCost,
+  adjustments: u.adjustments,
+  handover_date: u.handoverTarget || null,
+  is_sold: u.isSold,
+  is_settled: false,
+});
+const dbType = (side: TransactionSide) => side.replaceAll(' ', '');
+const sideFromDb = Object.fromEntries(
+  Object.values(TransactionSide).map((side) => [dbType(side), side]),
+);
+export const toTransaction = (r: Row): Transaction => {
+  let details: Record<string, string> = {};
+  try {
+    const parsed = typeof r.details === 'string' ? JSON.parse(r.details) : r.details;
+    if (parsed && typeof parsed === 'object') details = parsed;
+  } catch {
+    details.description = r.details;
   }
-
   return {
-    code,
-    name,
-    location: input.location?.trim() || null
+    id: r.id,
+    version: r.version,
+    requestId: r.request_id,
+    vendorId: r.vendor_id || undefined,
+    invoiceId: r.invoice_id || undefined,
+    unitId: r.unit_id || undefined,
+    scope: r.scope,
+    side: sideFromDb[r.type],
+    amount: Number(r.amount),
+    date: r.date,
+    mode: r.mode || undefined,
+    vendorName: r.party || undefined,
+    workPackage: details.workPackage as Transaction['workPackage'],
+    description: details.description,
+    dueDate: details.dueDate,
+    isSettled: r.status === 'Completed',
   };
 };
-
-const throwProjectCodeError = (error: unknown) => {
-  const candidate = error as { code?: string; message?: string } | null;
-  if (candidate?.code === '23505' || candidate?.message?.toLowerCase().includes('duplicate key')) {
-    throw new Error('Project code already exists.');
-  }
-  throwIfDataError(error);
+const transactionPayload = (projectId: string, t: Transaction) => ({
+  project_id: projectId,
+  unit_id: t.scope === TransactionScope.PerUnit ? t.unitId : null,
+  scope: t.scope || TransactionScope.ProjectWide,
+  type: dbType(t.side),
+  amount: t.amount,
+  date: t.date,
+  party: t.vendorName?.trim().replace(/\s+/g, ' ') || null,
+  invoice_id: t.invoiceId || null,
+  details: JSON.stringify({
+    description: t.description || '',
+    workPackage: t.workPackage || '',
+    dueDate: t.dueDate || '',
+  }),
+  mode: t.mode || null,
+  status: t.isSettled ? 'Completed' : 'Pending',
+});
+const conflict = () =>
+  new Error('This record changed in another session. Reload the project and try again.');
+const checkVersion = (previous: { version?: number }, next: { version?: number }) => {
+  if (previous.version !== next.version) throw conflict();
 };
-
-const throwUnitCodeError = (error: unknown) => {
-  const candidate = error as { code?: string; message?: string } | null;
-  if (candidate?.code === '23505' || candidate?.message?.toLowerCase().includes('duplicate key')) {
-    throw new Error('Unit code already exists in this project.');
-  }
-  throwIfDataError(error);
+const validProject = (input: NewProjectInput) => {
+  const name = input.name.trim(),
+    code = input.code.trim().toUpperCase();
+  if (!name || !/^[A-Z0-9_]+$/.test(code))
+    throw new Error('Enter a project name and a code containing letters, numbers or underscores.');
+  return { name, code, location: input.location?.trim() || null };
 };
-
-const toUnit = (row: any): Unit => {
-  const carpetAreaSqFt = Number(row.carpet_area_sqft ?? row.area_sqft ?? 0);
-  const saleableAreaSqFt = Number(row.saleable_area_sqft ?? row.area_sqft ?? 0);
-  const agreedPrice = Number(row.agreed_price ?? 0);
-  const rawAmenitiesCost = Number(row.amenities_cost ?? 0);
-  const rawAdjustments = Number(row.adjustments ?? 0);
-  const rawRate = Number(row.rate_per_sqft ?? 0);
-  const derivedRate = saleableAreaSqFt > 0
-    ? Math.max(0, (agreedPrice - rawAmenitiesCost - rawAdjustments) / saleableAreaSqFt)
-    : 0;
-
-  return {
-    id: row.id,
-    tower: row.tower,
-    flatNumber: row.flat_no,
-    floor: Number(row.floor_no ?? 0),
-    bhk: row.bhk,
-    carpetAreaSqFt,
-    saleableAreaSqFt,
-    ratePerSqFt: rawRate > 0 ? rawRate : derivedRate,
-    amenitiesCost: rawAmenitiesCost,
-    adjustments: rawAdjustments,
-    agreedPrice,
-    buyerName: row.buyer_name || '',
-    buyerPhone: row.buyer_phone || '',
-    ownershipType: row.ownership_type || OwnershipType.Developer,
-    handoverTarget: row.handover_date || undefined,
-    isSold: Boolean(row.is_sold) || Boolean(row.buyer_name),
-    isSettled: Boolean(row.is_settled)
-  };
-};
-
-const buildUnitStatus = (unit: Unit) => {
-  if (unit.ownershipType === OwnershipType.Landowner) return 'Landowner';
-  if (unit.isSettled) return 'Settled';
-  if (unit.isSold || unit.buyerName) return 'Sold';
-  return 'Unsold';
-};
-
-const buildUnitPayload = (projectId: string, unit: Unit) => {
-  const saleableAreaSqFt = unit.saleableAreaSqFt ?? 0;
-  const carpetAreaSqFt = unit.carpetAreaSqFt ?? saleableAreaSqFt;
-  const agreedPrice = (saleableAreaSqFt * (unit.ratePerSqFt ?? 0)) + (unit.amenitiesCost ?? 0) + (unit.adjustments ?? 0);
-  // unit_code is the human display code scoped by project; the app still uses
-  // the unit UUID for routes and transaction foreign keys.
-  const unitCode = getUnitCode(unit);
-
-  return cleanPayload({
-    project_id: projectId,
-    unit_code: unitCode,
-    tower: unit.tower,
-    flat_no: unit.flatNumber,
-    bhk: unit.bhk,
-    area_sqft: saleableAreaSqFt,
-    carpet_area_sqft: carpetAreaSqFt,
-    saleable_area_sqft: saleableAreaSqFt,
-    ownership_type: unit.ownershipType,
-    status: buildUnitStatus(unit),
-    buyer_name: unit.buyerName || null,
-    buyer_phone: unit.buyerPhone || null,
-    agreed_price: agreedPrice,
-    rate_per_sqft: unit.ratePerSqFt ?? 0,
-    amenities_cost: unit.amenitiesCost ?? 0,
-    adjustments: unit.adjustments ?? 0,
-    handover_date: unit.handoverTarget || null,
-    is_sold: Boolean(unit.isSold || unit.buyerName),
-    is_settled: Boolean(unit.isSettled)
-  });
-};
-
-const sideToDbType: Record<TransactionSide, string> = {
-  [TransactionSide.BuyerReceipt]: 'BuyerReceipt',
-  [TransactionSide.VendorInvoice]: 'VendorInvoice',
-  [TransactionSide.VendorPayment]: 'VendorPayment',
-  [TransactionSide.LandownerReimbursable]: 'LandownerReimbursable',
-  [TransactionSide.LandownerReimbursableReceipt]: 'LandownerReimbursableReceipt'
-};
-
-const dbTypeToSide: Record<string, TransactionSide> = {
-  BuyerReceipt: TransactionSide.BuyerReceipt,
-  VendorInvoice: TransactionSide.VendorInvoice,
-  VendorPayment: TransactionSide.VendorPayment,
-  LandownerReimbursable: TransactionSide.LandownerReimbursable,
-  LandownerReimbursableReceipt: TransactionSide.LandownerReimbursableReceipt
-};
-
-const toTransaction = (row: any): Transaction => {
-  let parsedDetails: { description?: string; workPackage?: string; dueDate?: string } = {};
-  if (row.details && typeof row.details === 'object') {
-    parsedDetails = row.details;
-  } else if (row.details && typeof row.details === 'string') {
-    try {
-      parsedDetails = JSON.parse(row.details);
-    } catch {
-      parsedDetails = { description: row.details };
-    }
-  }
-
-  return {
-    id: row.id,
-    unitId: row.unit_id || undefined,
-    scope: row.scope as TransactionScope,
-    side: dbTypeToSide[row.type] ?? (row.side as TransactionSide),
-    amount: Number(row.amount ?? 0),
-    date: row.date,
-    mode: row.mode || undefined,
-    vendorName: row.party || undefined,
-    workPackage: parsedDetails.workPackage as Transaction['workPackage'] || undefined,
-    description: parsedDetails.description || row.description || undefined,
-    dueDate: parsedDetails.dueDate || row.due_date || undefined,
-    isSettled: (row.status ?? row.isSettled) === 'Completed' || row.is_settled === true
-  };
-};
-
-const ensureLandownerUnitForReimbursable = (unit: Unit | undefined, side: TransactionSide) => {
-  if ([TransactionSide.LandownerReimbursable, TransactionSide.LandownerReimbursableReceipt].includes(side)) {
-    if (!unit || unit.ownershipType !== OwnershipType.Landowner) {
-      throw new Error('Landowner reimbursable transactions must be tied to a Landowner unit.');
-    }
-  }
-};
-
-const fetchLinkedUnit = async (projectId: string, unitRef: string): Promise<Unit | undefined> => {
-  if (isDemoMode) {
-    const demoUnit = getDemoUnit(projectId, unitRef);
-    return demoUnit ? cloneUnit(demoUnit) : undefined;
-  }
-  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(unitRef);
-  // Transaction forms submit UUIDs, but accepting unit_code keeps old bookmarks
-  // and legacy calls from failing during the migration window.
-  const query = getSupabaseClient()
-    .from('units')
-    .select('*')
-    .eq('project_id', projectId)
-    .is('deleted_at', null);
-
-  const { data, error } = isUuid
-    ? await query.eq('id', unitRef).maybeSingle()
-    : await query.eq('unit_code', unitRef).maybeSingle();
-
-  throwIfDataError(error);
-  return data ? toUnit(data) : undefined;
-};
-
-const createAuditEntries = async (
-  transactionId: string,
-  previousRow: any,
-  nextPayload: Record<string, any>,
-  changeReason: string,
-  changedBy: string
-) => {
-  const fieldMap: Record<string, string> = {
-    amount: 'amount',
-    scope: 'scope',
-    unit_id: 'unit_id',
-    type: 'type',
-    date: 'date',
-    party: 'party'
-  };
-
-  const auditRows = Object.entries(fieldMap)
-    .filter(([payloadField]) => nextPayload[payloadField] !== undefined && previousRow[payloadField] !== nextPayload[payloadField])
-    .map(([payloadField, fieldName]) => ({
-      transaction_id: transactionId,
-      changed_at: new Date().toISOString(),
-      changed_by: changedBy,
-      field_name: fieldName,
-      old_value: previousRow[payloadField] === null ? null : String(previousRow[payloadField]),
-      new_value: nextPayload[payloadField] === null ? null : String(nextPayload[payloadField]),
-      change_reason: changeReason
-    }));
-
-  if (auditRows.length) {
-    const { error } = await getSupabaseClient().from('transaction_audit_log').insert(auditRows);
-    throwIfDataError(error);
-  }
-};
-
 export async function fetchAllProjects(): Promise<Project[]> {
-  if (isDemoMode) return demoState.projects.map(cloneProject);
-
-  const { data, error } = await getSupabaseClient()
-    .from('projects')
-    .select('*')
-    .order('created_at', { ascending: true });
-  throwIfDataError(error);
-  return (data ?? []).map(toProject);
+  if (isDemoMode) return clone(demoProjectsState);
+  const { data, error } = await getSupabaseClient().rpc('finance_projects');
+  fail(error);
+  return (data || []).map(toProject);
 }
-
-export async function fetchProjectStats(projectIds: string[]): Promise<Record<string, ProjectStats>> {
+export async function fetchProjectStats(ids: string[]): Promise<Record<string, ProjectStats>> {
+  if (isDemoMode)
+    return Object.fromEntries(
+      ids.map((id) => [
+        id,
+        {
+          unitCount: demo(id).units.length,
+          lastTransactionDate: demo(id)
+            .transactions.map((t) => t.date)
+            .sort()
+            .at(-1),
+        },
+      ]),
+    );
+  const { data, error } = await getSupabaseClient().rpc('finance_project_stats');
+  fail(error);
+  return data || {};
+}
+export async function fetchProjectSnapshot(projectId: string): Promise<ProjectSnapshot> {
   if (isDemoMode) {
-    return Object.fromEntries(projectIds.map(projectId => [
-      projectId,
-      {
-        unitCount: isDemoProject(projectId) ? demoState.units.length : 0,
-        lastTransactionDate: isDemoProject(projectId)
-          ? demoState.transactions.reduce<string | null>((latest, transaction) => !latest || transaction.date > latest ? transaction.date : latest, null)
-          : null
-      }
-    ]));
+    const { units, transactions, role } = demo(projectId);
+    return clone({ units, transactions, role });
   }
-
-  const entries = await Promise.all(projectIds.map(async (projectId) => {
-    const [{ count, error: unitError }, { data: lastTransaction, error: transactionError }] = await Promise.all([
-      getSupabaseClient()
-        .from('units')
-        .select('id', { count: 'exact', head: true })
-        .eq('project_id', projectId)
-        .is('deleted_at', null),
-      getSupabaseClient()
-        .from('transactions')
-        .select('date')
-        .eq('project_id', projectId)
-        .is('deleted_at', null)
-        .order('date', { ascending: false })
-        .limit(1)
-        .maybeSingle()
-    ]);
-
-    throwIfDataError(unitError);
-    throwIfDataError(transactionError);
-
-    return [
-      projectId,
-      {
-        unitCount: count ?? 0,
-        lastTransactionDate: lastTransaction?.date ?? null
-      }
-    ] as const;
-  }));
-
-  return Object.fromEntries(entries);
+  const { data, error } = await getSupabaseClient().rpc('finance_snapshot', {
+    target_project: projectId,
+  });
+  fail(error);
+  if (!data?.role) throw new Error(SUPABASE_RLS_SETUP_ERROR);
+  return {
+    units: (data.units || []).map(toUnit),
+    transactions: (data.transactions || []).map(toTransaction),
+    role: data.role,
+  };
 }
-
+export async function fetchUnits(projectId: string) {
+  return (await fetchProjectSnapshot(projectId)).units;
+}
+export async function fetchTransactions(projectId: string) {
+  return (await fetchProjectSnapshot(projectId)).transactions;
+}
 export async function createProject(input: NewProjectInput): Promise<Project> {
-  const payload = validateProjectInput(input);
+  const payload = validProject(input);
   if (isDemoMode) {
-    const project: Project = {
-      id: buildDemoId('demo-project'),
-      code: payload.code,
-      name: payload.name,
-      location: payload.location,
+    if (demoProjectsState.some((p) => p.code === payload.code))
+      throw new Error('Project code already exists.');
+    const p = {
+      ...payload,
+      id: crypto.randomUUID(),
+      version: 1,
       createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
     };
-    demoState.projects.push(project);
-    return cloneProject(project);
+    demoProjectsState.push(p);
+    demoData.set(p.id, {
+      units: [],
+      transactions: [],
+      history: new Set(),
+      requests: new Set(),
+      role: 'owner',
+    });
+    return clone(p);
   }
-
-  const { data, error } = await getSupabaseClient()
-    .from('projects')
-    .insert(payload)
-    .select('*')
-    .single();
-  if (error) throwProjectCodeError(error);
-  if (!data) throw new Error('Failed to create project.');
-  return toProject(data);
+  const { data, error } = await getSupabaseClient().rpc('finance_create_project', { payload });
+  fail(error);
+  return toProject(data!);
 }
-
-export async function updateProject(id: string, input: Pick<NewProjectInput, 'name' | 'location'>): Promise<Project> {
-  const name = input.name.trim();
-  if (!name) throw new Error('Project name is required.');
+export async function updateProject(
+  id: string,
+  input: Pick<NewProjectInput, 'name' | 'location'> & { version?: number },
+): Promise<Project> {
+  if (!input.name.trim()) throw new Error('Project name is required.');
   if (isDemoMode) {
-    const project = demoState.projects.find(candidate => candidate.id === id);
-    if (!project) throw new Error('Demo project was not found.');
-    project.name = name;
-    project.location = input.location?.trim() || null;
-    project.updatedAt = new Date().toISOString();
-    return cloneProject(project);
+    const p = demoProjectsState.find((p) => p.id === id);
+    if (!p) throw new Error('Project not found.');
+    checkVersion(p, input);
+    Object.assign(p, input, { version: p.version + 1, updatedAt: new Date().toISOString() });
+    return clone(p);
   }
-
   const { data, error } = await getSupabaseClient()
     .from('projects')
-    .update({ name, location: input.location?.trim() || null })
+    .update({ name: input.name.trim(), location: input.location?.trim() || null })
     .eq('id', id)
-    .select('*')
-    .single();
-  throwIfDataError(error);
-  if (!data) throw new Error('Failed to update project.');
+    .eq('version', input.version ?? -1)
+    .select()
+    .maybeSingle();
+  fail(error);
+  if (!data) throw conflict();
   return toProject(data);
 }
-
-export async function fetchUnits(projectId: string): Promise<Unit[]> {
-  if (isDemoMode) {
-    ensureDemoProject(projectId);
-    return demoState.units.map(cloneUnit).sort((a, b) => `${a.tower}${a.flatNumber}`.localeCompare(`${b.tower}${b.flatNumber}`));
-  }
-
-  const { data, error } = await getSupabaseClient()
-    .from('units')
-    .select('*')
-    .eq('project_id', projectId)
-    .is('deleted_at', null)
-    .order('tower', { ascending: true })
-    .order('flat_no', { ascending: true });
-  throwIfDataError(error);
-  return (data ?? []).map(toUnit);
-}
-
-export async function fetchTransactions(projectId: string): Promise<Transaction[]> {
-  if (isDemoMode) {
-    ensureDemoProject(projectId);
-    return demoState.transactions.map(cloneTransaction).sort((a, b) => a.date.localeCompare(b.date));
-  }
-
-  const { data, error } = await getSupabaseClient()
-    .from('transactions')
-    .select('*')
-    .eq('project_id', projectId)
-    .is('deleted_at', null)
-    .order('date', { ascending: true })
-    .order('created_at', { ascending: true });
-  throwIfDataError(error);
-  return (data ?? []).map(toTransaction);
-}
-
 export async function createOrUpdateUnit(projectId: string, unit: Unit): Promise<Unit> {
+  validateUnit(unit);
   const payload = buildUnitPayload(projectId, unit);
   if (isDemoMode) {
-    ensureDemoProject(projectId);
-    const nextUnit: Unit = {
+    const state = demo(projectId),
+      old = state.units.find((u) => u.id === unit.id);
+    if (unit.id && !old) throw conflict();
+    if (old) checkVersion(old, unit);
+    if (
+      old &&
+      state.history.has(old.id!) &&
+      (old.ownershipType !== unit.ownershipType || (old.isSold && !unit.isSold))
+    )
+      throw new Error('A unit with financial history cannot change ownership or become unsold.');
+    if (state.units.some((u) => u.id !== unit.id && getUnitCode(u) === getUnitCode(unit)))
+      throw new Error('Unit code already exists in this project.');
+    const next = {
       ...unit,
-      id: unit.id || buildDemoId('demo-unit'),
-      agreedPrice: payload.agreed_price
+      id: unit.id || crypto.randomUUID(),
+      agreedPrice: payload.agreed_price,
+      version: (old?.version || 0) + 1,
     };
-    const existingIndex = demoState.units.findIndex(candidate => candidate.id === nextUnit.id);
-    if (existingIndex >= 0) demoState.units[existingIndex] = nextUnit;
-    else demoState.units.push(nextUnit);
-    return cloneUnit(nextUnit);
+    if (old) state.units[state.units.indexOf(old)] = next;
+    else state.units.push(next);
+    return clone(next);
   }
-
-  if (unit.id) {
-    const { data, error } = await getSupabaseClient()
-      .from('units')
-      .update(payload)
-      .eq('project_id', projectId)
-      .eq('id', unit.id)
-      .select('*')
-      .single();
-    if (error) throwUnitCodeError(error);
-    if (!data) throw new Error('Failed to update unit');
-    return toUnit(data);
-  }
-  const { data, error } = await getSupabaseClient().from('units').insert(payload).select('*').single();
-  if (error) throwUnitCodeError(error);
-  if (!data) throw new Error('Failed to create unit');
+  const query = unit.id
+    ? getSupabaseClient()
+        .from('units')
+        .update(payload)
+        .eq('project_id', projectId)
+        .eq('id', unit.id)
+        .eq('version', unit.version ?? -1)
+    : getSupabaseClient().from('units').insert(payload);
+  const { data, error } = await query.select().maybeSingle();
+  fail(error);
+  if (!data) throw conflict();
   return toUnit(data);
 }
-
-export async function createUnit(projectId: string, payload: NewUnitInput): Promise<Unit> { return createOrUpdateUnit(projectId, payload); }
-export async function updateUnit(projectId: string, payload: Unit): Promise<Unit> {
-  if (!payload.id) throw new Error('Unit id is required for update');
-  return createOrUpdateUnit(projectId, payload);
+export async function createUnit(projectId: string, unit: NewUnitInput) {
+  return createOrUpdateUnit(projectId, unit);
 }
-
-export async function deleteUnit(projectId: string, id: string, deleteReason: string, deletedBy: string = SYSTEM_USER): Promise<void> {
+export async function updateUnit(projectId: string, unit: Unit) {
+  if (!unit.id) throw new Error('Unit id is required.');
+  return createOrUpdateUnit(projectId, unit);
+}
+export async function deleteUnit(
+  projectId: string,
+  id: string,
+  reason: string,
+  version: number,
+): Promise<void> {
+  if (!reason.trim()) throw new Error('An archive reason is required.');
   if (isDemoMode) {
-    ensureDemoProject(projectId);
-    demoState.units = demoState.units.filter(unit => unit.id !== id);
-    demoState.transactions = demoState.transactions.filter(transaction => transaction.unitId !== id);
+    const state = demo(projectId);
+    const existing = state.units.find((u) => u.id === id);
+    if (!existing || existing.version !== version) throw conflict();
+    if (state.history.has(id)) throw new Error('Units with financial history cannot be archived.');
+    state.units = state.units.filter((u) => u.id !== id);
     return;
   }
-
-  const { error } = await getSupabaseClient()
+  const { data, error } = await getSupabaseClient()
     .from('units')
-    .update({ deleted_at: new Date().toISOString(), deleted_by: deletedBy, delete_reason: deleteReason || 'Soft delete' })
+    .update({ deleted_at: new Date().toISOString(), delete_reason: reason })
     .eq('project_id', projectId)
-    .eq('id', id);
-  throwIfDataError(error);
+    .eq('id', id)
+    .eq('version', version)
+    .is('deleted_at', null)
+    .select('id')
+    .maybeSingle();
+  fail(error);
+  if (!data) throw conflict();
 }
-
-export async function createTransaction(projectId: string, payload: NewTransactionInput): Promise<Transaction> {
-  const resolvedScope = payload.side === TransactionSide.BuyerReceipt
-    ? TransactionScope.PerUnit
-    : payload.scope ?? TransactionScope.ProjectWide;
-
-  if (payload.amount < 0) throw new Error('Amount must be a non-negative number.');
-
-  assertPerUnitRequiresUnit(resolvedScope, payload.unitId);
-  // Resolve a single unit in the active project instead of fetching every unit;
-  // this keeps project isolation and avoids the old N+1-style lookup.
-  const linkedUnit = resolvedScope === TransactionScope.PerUnit && payload.unitId
-    ? await fetchLinkedUnit(projectId, payload.unitId)
-    : undefined;
-  if (resolvedScope === TransactionScope.PerUnit && !linkedUnit) {
-    throw new Error('Selected unit was not found in this project.');
-  }
-  ensureLandownerUnitForReimbursable(linkedUnit, payload.side);
+export async function createTransaction(
+  projectId: string,
+  input: NewTransactionInput,
+): Promise<Transaction> {
+  const t = {
+    ...input,
+    scope:
+      input.side === TransactionSide.BuyerReceipt
+        ? TransactionScope.PerUnit
+        : input.scope || TransactionScope.ProjectWide,
+    requestId: input.requestId || crypto.randomUUID(),
+  };
+  const snapshot = await fetchProjectSnapshot(projectId);
+  validateTransaction(t, snapshot.units, snapshot.transactions);
   if (isDemoMode) {
-    const transaction: Transaction = {
-      ...payload,
-      id: buildDemoId('demo-tx'),
-      scope: resolvedScope,
-      unitId: resolvedScope === TransactionScope.PerUnit ? linkedUnit?.id : undefined
-    };
-    demoState.transactions.push(transaction);
-    return cloneTransaction(transaction);
+    const state = demo(projectId),
+      prior = state.transactions.find((p) => p.requestId === t.requestId);
+    if (prior) {
+      if (
+        JSON.stringify(transactionPayload(projectId, prior)) !==
+        JSON.stringify(transactionPayload(projectId, t))
+      )
+        throw new Error(
+          'This submission was already saved with different values. Reload before creating another transaction.',
+        );
+      return clone(prior);
+    }
+    if (state.requests.has(t.requestId))
+      throw new Error(
+        'This submission was already voided. Reload before creating another transaction.',
+      );
+    state.requests.add(t.requestId);
+    const next = { ...t, id: crypto.randomUUID(), version: 1 };
+    state.transactions.push(next);
+    if (t.unitId) state.history.add(t.unitId);
+    return clone(next);
   }
-
-  const insertPayload = cleanPayload({
-    project_id: projectId,
-    unit_id: resolvedScope === TransactionScope.PerUnit ? linkedUnit?.id ?? null : null,
-    type: sideToDbType[payload.side],
-    scope: resolvedScope,
-    date: payload.date,
-    amount: payload.amount,
-    party: payload.vendorName || null,
-    details: JSON.stringify({ description: payload.description, workPackage: payload.workPackage, dueDate: payload.dueDate }),
-    mode: payload.mode || null,
-    status: payload.isSettled ? 'Completed' : 'Pending'
+  const { data, error } = await getSupabaseClient().rpc('finance_create_transaction', {
+    payload: { ...transactionPayload(projectId, t), request_id: t.requestId },
   });
-
-  const { data, error } = await getSupabaseClient().from('transactions').insert(insertPayload).select('*').single();
-  throwIfDataError(error);
-  if (!data) throw new Error('Failed to create transaction');
+  fail(error);
   return toTransaction(data);
 }
-
 export async function updateTransaction(
   projectId: string,
   id: string,
-  payload: Partial<NewTransactionInput>,
-  changedBy: string = SYSTEM_USER,
-  changeReason: string = 'Manual financial edit'
+  partial: Partial<NewTransactionInput>,
 ): Promise<Transaction> {
+  const snapshot = await fetchProjectSnapshot(projectId),
+    previous = snapshot.transactions.find((t) => t.id === id);
+  if (!previous) throw conflict();
+  checkVersion(previous, partial);
+  const next = { ...previous, ...partial };
+  if (next.scope === TransactionScope.ProjectWide) next.unitId = undefined;
+  validateTransaction(next, snapshot.units, snapshot.transactions);
   if (isDemoMode) {
-    ensureDemoProject(projectId);
-    const existingIndex = demoState.transactions.findIndex(transaction => transaction.id === id);
-    if (existingIndex < 0) throw new Error('Demo transaction not found.');
-    const existing = demoState.transactions[existingIndex];
-    const incomingSide = payload.side ?? existing.side;
-    const incomingScope = incomingSide === TransactionSide.BuyerReceipt
-      ? TransactionScope.PerUnit
-      : payload.scope ?? existing.scope ?? TransactionScope.ProjectWide;
-    if (payload.amount !== undefined && payload.amount < 0) throw new Error('Amount must be a non-negative number.');
-    const incomingUnitId = incomingScope === TransactionScope.ProjectWide
-      ? undefined
-      : payload.unitId === undefined
-        ? existing.unitId
-        : payload.unitId;
-    assertPerUnitRequiresUnit(incomingScope, incomingUnitId);
-    const linkedUnit = incomingScope === TransactionScope.PerUnit && incomingUnitId
-      ? getDemoUnit(projectId, incomingUnitId)
-      : undefined;
-    if (incomingScope === TransactionScope.PerUnit && !linkedUnit) throw new Error('Selected unit was not found in this project.');
-    ensureLandownerUnitForReimbursable(linkedUnit, incomingSide);
-
-    const nextTransaction: Transaction = {
-      ...existing,
-      ...payload,
-      side: incomingSide,
-      scope: incomingScope,
-      unitId: incomingScope === TransactionScope.PerUnit ? linkedUnit?.id : undefined
-    };
-    demoState.transactions[existingIndex] = nextTransaction;
-    return cloneTransaction(nextTransaction);
+    const state = demo(projectId);
+    if (
+      state.transactions.some((t) => t.invoiceId === id) &&
+      (next.side !== previous.side || next.vendorName !== previous.vendorName)
+    )
+      throw new Error('Void linked payments before changing this invoice vendor or type.');
+    next.version = (previous.version || 0) + 1;
+    state.transactions[state.transactions.findIndex((t) => t.id === id)] = next;
+    if (next.unitId) state.history.add(next.unitId);
+    return clone(next);
   }
-
-  const { data: existing, error: fetchError } = await getSupabaseClient()
-    .from('transactions')
-    .select('*')
-    .eq('project_id', projectId)
-    .eq('id', id)
-    .single();
-  throwIfDataError(fetchError);
-  if (!existing) throw new Error('Transaction not found');
-
-  const incomingSide = payload.side ?? dbTypeToSide[existing.type] ?? existing.side;
-  const incomingScope = incomingSide === TransactionSide.BuyerReceipt
-    ? TransactionScope.PerUnit
-    : payload.scope ?? existing.scope;
-  if (payload.amount !== undefined && payload.amount < 0) throw new Error('Amount must be a non-negative number.');
-  // If the caller did not change the unit, keep the existing DB foreign key.
-  // If scope changed to project-wide, intentionally clear the unit reference.
-  const incomingUnitId = incomingScope === TransactionScope.ProjectWide
-    ? null
-    : payload.unitId === undefined
-      ? existing.unit_id
-      : payload.unitId;
-
-  assertPerUnitRequiresUnit(incomingScope, incomingUnitId ?? undefined);
-  const linkedUnit = incomingScope === TransactionScope.PerUnit && incomingUnitId
-    ? await fetchLinkedUnit(projectId, incomingUnitId)
-    : undefined;
-  if (incomingScope === TransactionScope.PerUnit && !linkedUnit) {
-    throw new Error('Selected unit was not found in this project.');
-  }
-  ensureLandownerUnitForReimbursable(linkedUnit, incomingSide);
-
-  const updatePayload = cleanPayload({
-    unit_id: incomingScope === TransactionScope.ProjectWide ? null : linkedUnit?.id,
-    type: payload.side ? sideToDbType[payload.side] : undefined,
-    scope: incomingScope === existing.scope && payload.scope === undefined ? undefined : incomingScope,
-    date: payload.date,
-    amount: payload.amount,
-    party: payload.vendorName,
-    details: payload.description || payload.workPackage || payload.dueDate
-      ? JSON.stringify({ description: payload.description, workPackage: payload.workPackage, dueDate: payload.dueDate })
-      : undefined,
-    mode: payload.mode,
-    status: payload.isSettled === undefined ? undefined : payload.isSettled ? 'Completed' : 'Pending'
-  });
-
-  await createAuditEntries(id, existing, updatePayload, changeReason, changedBy);
-
   const { data, error } = await getSupabaseClient()
     .from('transactions')
-    .update(updatePayload)
+    .update(transactionPayload(projectId, next))
     .eq('project_id', projectId)
     .eq('id', id)
-    .select('*')
-    .single();
-  throwIfDataError(error);
-  if (!data) throw new Error('Failed to update transaction');
+    .eq('version', previous.version!)
+    .is('deleted_at', null)
+    .select()
+    .maybeSingle();
+  fail(error);
+  if (!data) throw conflict();
   return toTransaction(data);
 }
-
-export async function deleteTransaction(projectId: string, id: string, deleteReason: string, deletedBy: string = SYSTEM_USER): Promise<void> {
+export async function deleteTransaction(
+  projectId: string,
+  id: string,
+  reason: string,
+  version: number,
+): Promise<void> {
+  if (!reason.trim()) throw new Error('A void reason is required.');
   if (isDemoMode) {
-    ensureDemoProject(projectId);
-    demoState.transactions = demoState.transactions.filter(transaction => transaction.id !== id);
+    const state = demo(projectId);
+    const existing = state.transactions.find((t) => t.id === id);
+    if (!existing || existing.version !== version) throw conflict();
+    if (state.transactions.some((t) => t.invoiceId === id))
+      throw new Error('Void linked payments before voiding this invoice.');
+    state.transactions = state.transactions.filter((t) => t.id !== id);
     return;
   }
-
-  const { error } = await getSupabaseClient()
+  const { data, error } = await getSupabaseClient()
     .from('transactions')
-    .update({ deleted_at: new Date().toISOString(), deleted_by: deletedBy, delete_reason: deleteReason || 'Soft delete' })
+    .update({ deleted_at: new Date().toISOString(), delete_reason: reason })
     .eq('project_id', projectId)
-    .eq('id', id);
-  throwIfDataError(error);
+    .eq('id', id)
+    .eq('version', version)
+    .is('deleted_at', null)
+    .select('id')
+    .maybeSingle();
+  fail(error);
+  if (!data) throw conflict();
 }

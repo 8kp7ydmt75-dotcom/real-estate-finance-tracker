@@ -1,4 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import TransactionStatus from './TransactionStatus';
+import { reconcileVendorLedger } from '../utils/ledger';
+import { confirmAction } from '../utils/confirmAction';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../context/appContext';
 import { formatCurrency, getUnitCode } from '../utils/utils';
 import { Transaction, TransactionSide, TransactionScope } from '../types/types';
@@ -6,21 +9,31 @@ import { Search, CheckCircle2, Plus } from 'lucide-react';
 import TransactionFormModal from './TransactionFormModal';
 
 const TransactionList: React.FC = () => {
-  const { transactions, units, addTransaction, updateTransaction, deleteTransaction } = useApp();
-  const [search, setSearch] = useState("");
-  const [filterSide, setFilterSide] = useState<"All" | TransactionSide>("All");
+  const { canEdit, transactions, units, addTransaction, updateTransaction, deleteTransaction } =
+    useApp();
+  const invoiceOutstanding = useMemo(
+    () => reconcileVendorLedger(transactions).invoiceOutstanding,
+    [transactions],
+  );
+  const [page, setPage] = useState(0);
+  const pageSize = 50;
+  const [search, setSearch] = useState('');
+  const [filterSide, setFilterSide] = useState<'All' | TransactionSide>('All');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const unitLabelById = useMemo(
-    () => Object.fromEntries(units.filter(unit => unit.id).map(unit => [unit.id!, getUnitCode(unit)])),
-    [units]
+    () =>
+      Object.fromEntries(
+        units.filter((unit) => unit.id).map((unit) => [unit.id!, getUnitCode(unit)]),
+      ),
+    [units],
   );
 
   const sortedTransactions = useMemo(() => {
     return [...transactions]
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-      .filter(t => {
-        if (filterSide !== "All" && t.side !== filterSide) return false;
+      .filter((t) => {
+        if (filterSide !== 'All' && t.side !== filterSide) return false;
         if (search) {
           const s = search.toLowerCase();
           const unitLabel = t.unitId ? unitLabelById[t.unitId] || t.unitId : '';
@@ -33,6 +46,8 @@ const TransactionList: React.FC = () => {
         return true;
       });
   }, [transactions, filterSide, search, unitLabelById]);
+  useEffect(() => setPage(0), [search, filterSide, transactions.length]);
+  const pageCount = Math.max(1, Math.ceil(sortedTransactions.length / pageSize));
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
@@ -43,7 +58,11 @@ const TransactionList: React.FC = () => {
 
       <div className="flex justify-end">
         <button
-          onClick={() => { setEditingTransaction(null); setIsModalOpen(true); }}
+          disabled={!canEdit}
+          onClick={() => {
+            setEditingTransaction(null);
+            setIsModalOpen(true);
+          }}
           className="flex items-center gap-2 bg-primary text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-primary/90 shadow shadow-primary/20"
         >
           <Plus size={16} /> Add Transaction
@@ -70,11 +89,28 @@ const TransactionList: React.FC = () => {
             className="bg-transparent text-sm font-medium text-slate-700 focus:outline-none cursor-pointer"
           >
             <option value="All">All Transactions</option>
-            {Object.values(TransactionSide).map(s => <option key={s} value={s}>{s}</option>)}
+            {Object.values(TransactionSide).map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
           </select>
         </div>
       </div>
 
+      <div className="flex items-center justify-between gap-4 text-sm">
+        <span>
+          {sortedTransactions.length} transactions · Page {page + 1} of {pageCount}
+        </span>
+        <div className="flex gap-4">
+          <button disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
+            Previous
+          </button>
+          <button disabled={page + 1 >= pageCount} onClick={() => setPage((p) => p + 1)}>
+            Next
+          </button>
+        </div>
+      </div>
       {/* Transactions Table */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="overflow-x-auto">
@@ -105,24 +141,36 @@ const TransactionList: React.FC = () => {
                   </td>
                 </tr>
               ) : (
-                sortedTransactions.map(t => (
+                sortedTransactions.slice(page * pageSize, (page + 1) * pageSize).map((t) => (
                   <tr key={t.id} className="hover:bg-slate-50/80 transition-colors">
                     <td className="px-6 py-4 text-slate-600 whitespace-nowrap">{t.date}</td>
                     <td className="px-6 py-4">
-                      <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-semibold ${
-                        (t.scope ?? TransactionScope.ProjectWide) === TransactionScope.ProjectWide
-                          ? 'bg-indigo-100 text-indigo-800'
-                          : 'bg-slate-100 text-slate-700'
-                      }`}>
-                        {(t.scope ?? TransactionScope.ProjectWide) === TransactionScope.ProjectWide ? 'ProjectWide' : 'Per Unit'}
+                      <span
+                        className={`inline-flex px-2 py-0.5 rounded-full text-xs font-semibold ${
+                          (t.scope ?? TransactionScope.ProjectWide) === TransactionScope.ProjectWide
+                            ? 'bg-indigo-100 text-indigo-800'
+                            : 'bg-slate-100 text-slate-700'
+                        }`}
+                      >
+                        {(t.scope ?? TransactionScope.ProjectWide) === TransactionScope.ProjectWide
+                          ? 'ProjectWide'
+                          : 'Per Unit'}
                       </span>
                     </td>
-                    <td className="px-6 py-4 font-bold text-slate-700">{t.unitId ? unitLabelById[t.unitId] || t.unitId : '—'}</td>
+                    <td className="px-6 py-4 font-bold text-slate-700">
+                      {t.unitId ? unitLabelById[t.unitId] || t.unitId : '—'}
+                    </td>
                     <td className="px-6 py-4">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
-                        ${t.side === TransactionSide.BuyerReceipt ? 'bg-green-100 text-green-800' :
-                          t.side === TransactionSide.VendorInvoice ? 'bg-orange-100 text-orange-800' :
-                          'bg-rose-100 text-rose-800'}`}>
+                      <span
+                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+                        ${
+                          t.side === TransactionSide.BuyerReceipt
+                            ? 'bg-green-100 text-green-800'
+                            : t.side === TransactionSide.VendorInvoice
+                              ? 'bg-orange-100 text-orange-800'
+                              : 'bg-rose-100 text-rose-800'
+                        }`}
+                      >
                         {t.side}
                       </span>
                     </td>
@@ -130,13 +178,17 @@ const TransactionList: React.FC = () => {
                       {t.side === TransactionSide.BuyerReceipt ? (
                         <div className="flex flex-col">
                           <span className="font-medium">Buyer Receipt</span>
-                          {t.description && <span className="text-xs text-slate-400">{t.description}</span>}
+                          {t.description && (
+                            <span className="text-xs text-slate-400">{t.description}</span>
+                          )}
                         </div>
                       ) : (
                         <div className="flex flex-col">
                           <span className="font-medium text-slate-800">{t.vendorName}</span>
                           <span className="text-xs text-slate-400">{t.workPackage}</span>
-                          {t.description && <span className="text-xs text-slate-400">{t.description}</span>}
+                          {t.description && (
+                            <span className="text-xs text-slate-400">{t.description}</span>
+                          )}
                         </div>
                       )}
                     </td>
@@ -144,34 +196,35 @@ const TransactionList: React.FC = () => {
                       {formatCurrency(t.amount)}
                     </td>
                     <td className="px-6 py-4 text-center">
-                      {t.isSettled ? (
-                        <div className="flex justify-center" title="Settled">
-                          <CheckCircle2 size={18} className="text-green-500" />
-                        </div>
-                      ) : (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-500">
-                          Pending
-                        </span>
-                      )}
+                      <TransactionStatus
+                        transaction={t}
+                        outstanding={t.id ? invoiceOutstanding[t.id] : undefined}
+                      />
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex gap-2 justify-end">
                         <button
-                          onClick={() => { setEditingTransaction(t); setIsModalOpen(true); }}
+                          disabled={!canEdit}
+                          onClick={() => {
+                            setEditingTransaction(t);
+                            setIsModalOpen(true);
+                          }}
                           className="text-primary hover:underline text-xs font-medium"
                         >
                           Edit
                         </button>
                         <button
+                          disabled={!canEdit}
                           onClick={async () => {
-                            if (window.confirm('Delete this transaction?')) {
-                              const reason = window.prompt('Delete reason (required for audit trail):', 'Entered in error') || 'Entered in error';
-                              await deleteTransaction(t.id, reason);
-                            }
+                            await confirmAction(
+                              'Void this transaction? Its history will be retained.',
+                              'Entered in error',
+                              (reason) => deleteTransaction(t.id, reason),
+                            );
                           }}
                           className="text-rose-500 hover:text-rose-700 text-xs font-medium"
                         >
-                          Delete
+                          Void
                         </button>
                       </div>
                     </td>
@@ -190,7 +243,10 @@ const TransactionList: React.FC = () => {
           units={units}
           defaultUnitId={units[0]?.id}
           initialTransaction={editingTransaction || undefined}
-          onClose={() => { setIsModalOpen(false); setEditingTransaction(null); }}
+          onClose={() => {
+            setIsModalOpen(false);
+            setEditingTransaction(null);
+          }}
           onSubmit={async (t) => {
             if (editingTransaction) {
               await updateTransaction(t);

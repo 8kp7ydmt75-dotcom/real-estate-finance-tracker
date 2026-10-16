@@ -1,11 +1,23 @@
 import React, {
   ErrorInfo,
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
-  useState
+  useRef,
+  useState,
 } from 'react';
-import { HashRouter, Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
+import {
+  HashRouter,
+  Link,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useParams,
+} from 'react-router-dom';
 import {
   AlertTriangle,
   BadgeIndianRupee,
@@ -18,10 +30,17 @@ import {
   Plus,
   RefreshCw,
   Settings,
-  X
+  X,
 } from 'lucide-react';
 import { AppContext, AppContextType, AppStatus, useApp } from './context/appContext';
-import { NewProjectInput, Project, ProjectStats, Transaction, Unit, UpdateProjectInput } from './types/types';
+import {
+  NewProjectInput,
+  Project,
+  ProjectStats,
+  Transaction,
+  Unit,
+  UpdateProjectInput,
+} from './types/types';
 import {
   createProject as createProjectRecord,
   createTransaction as createTransactionRecord,
@@ -30,19 +49,20 @@ import {
   deleteUnit as removeUnit,
   fetchAllProjects,
   fetchProjectStats,
-  fetchTransactions,
-  fetchUnits,
+  fetchProjectSnapshot,
   SUPABASE_RLS_SETUP_ERROR,
   SUPABASE_SCHEMA_SETUP_ERROR,
   updateProject as persistProjectRecord,
-  updateTransaction as persistTransaction
+  updateTransaction as persistTransaction,
 } from './services/dataService';
-import Dashboard from './components/Dashboard';
+import AuthGate from './components/AuthGate';
+const Dashboard = lazy(() => import('./components/Dashboard'));
+const AuditLog = lazy(() => import('./components/AuditLog'));
 import ProjectForm from './components/ProjectForm';
 import ProjectPicker from './components/ProjectPicker';
-import TransactionList from './components/TransactionList';
-import UnitDetail from './components/UnitDetail';
-import UnitList from './components/UnitList';
+const TransactionList = lazy(() => import('./components/TransactionList'));
+const UnitDetail = lazy(() => import('./components/UnitDetail'));
+const UnitList = lazy(() => import('./components/UnitList'));
 import { isDemoMode, isSupabaseConfigured, supabaseConfigError } from './services/supabaseClient';
 
 const LAST_ACTIVE_PROJECT_KEY = 'property-finance:last-active-project';
@@ -53,7 +73,17 @@ const ENV_LOGO_URL = (import.meta.env.VITE_APP_LOGO_URL || '').trim();
 
 const App: React.FC = () => (
   <HashRouter>
-    <WorkspaceApp />
+    <AuthGate>
+      <Suspense
+        fallback={
+          <p role="status" className="p-8">
+            Loading screen…
+          </p>
+        }
+      >
+        <WorkspaceApp />
+      </Suspense>
+    </AuthGate>
   </HashRouter>
 );
 
@@ -66,19 +96,26 @@ const WorkspaceApp: React.FC = () => {
   const [units, setUnits] = useState<Unit[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [appStatus, setAppStatus] = useState<AppStatus>('loading');
+  const requestSequence = useRef(0);
+  const projectListSequence = useRef(0);
+  const selectedProject = useRef<string | null>(null);
+  const [canEdit, setCanEdit] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [customLogoUrl, setCustomLogoUrl] = useState(() => localStorage.getItem(CUSTOM_LOGO_KEY) || '');
+  const [customLogoUrl, setCustomLogoUrl] = useState(
+    () => localStorage.getItem(CUSTOM_LOGO_KEY) || '',
+  );
 
   const activeProject = useMemo(
-    () => projects.find(project => project.id === activeProjectId) ?? null,
-    [activeProjectId, projects]
+    () => projects.find((project) => project.id === activeProjectId) ?? null,
+    [activeProjectId, projects],
   );
   const brandLogoUrl = customLogoUrl || ENV_LOGO_URL;
 
   const needsDatabaseSetup = loadError === SUPABASE_SCHEMA_SETUP_ERROR;
   const needsRlsSetup = loadError === SUPABASE_RLS_SETUP_ERROR;
-  const canUseDataRoutes = (isSupabaseConfigured || isDemoMode) && !needsDatabaseSetup && !needsRlsSetup;
+  const canUseDataRoutes =
+    (isSupabaseConfigured || isDemoMode) && !needsDatabaseSetup && !needsRlsSetup;
 
   const refreshProjectStats = useCallback(async (targetProjects: Project[]) => {
     if (!targetProjects.length) {
@@ -86,11 +123,12 @@ const WorkspaceApp: React.FC = () => {
       return;
     }
 
-    const stats = await fetchProjectStats(targetProjects.map(project => project.id));
+    const stats = await fetchProjectStats(targetProjects.map((project) => project.id));
     setProjectStats(stats);
   }, []);
 
   const refreshProjects = useCallback(async () => {
+    const request = ++projectListSequence.current;
     if (!isSupabaseConfigured && !isDemoMode) {
       setAppStatus('error');
       setLoadError(supabaseConfigError?.message ?? 'Supabase configuration is missing.');
@@ -100,35 +138,39 @@ const WorkspaceApp: React.FC = () => {
     setAppStatus('loading');
     try {
       const loadedProjects = await fetchAllProjects();
+      const stats = await fetchProjectStats(loadedProjects.map((project) => project.id));
+      if (request !== projectListSequence.current) return;
       setProjects(loadedProjects);
-      await refreshProjectStats(loadedProjects);
+      setProjectStats(stats);
       setLoadError(null);
       setAppStatus('selecting');
     } catch (err) {
+      if (request !== projectListSequence.current) return;
       console.error(err);
       setAppStatus('error');
       setLoadError(err instanceof Error ? err.message : 'Failed to load projects.');
     }
-  }, [refreshProjectStats]);
+  }, []);
 
-  const loadProject = useCallback(async (projectId: string) => {
+  const loadProject = useCallback(async (projectId: string, quiet = false) => {
+    const request = ++requestSequence.current;
+    selectedProject.current = projectId;
     if (supabaseConfigError) throw supabaseConfigError;
-    setAppStatus('loading');
+    if (!quiet) setAppStatus('loading');
     try {
       // The selected project is loaded as one isolated working set so child
       // screens never keep units or transactions from another project in memory.
-      const [loadedUnits, loadedTransactions] = await Promise.all([
-        fetchUnits(projectId),
-        fetchTransactions(projectId)
-      ]);
-
-      setUnits(loadedUnits);
-      setTransactions(loadedTransactions);
+      const snapshot = await fetchProjectSnapshot(projectId);
+      if (request !== requestSequence.current) return;
+      setUnits(snapshot.units);
+      setTransactions(snapshot.transactions);
+      setCanEdit(snapshot.role !== 'viewer');
       setActiveProjectId(projectId);
       localStorage.setItem(LAST_ACTIVE_PROJECT_KEY, projectId);
       setLoadError(null);
       setAppStatus('ready');
     } catch (err) {
+      if (request !== requestSequence.current) return;
       console.error(err);
       setAppStatus('error');
       setLoadError(err instanceof Error ? err.message : 'Failed to load project data.');
@@ -137,6 +179,10 @@ const WorkspaceApp: React.FC = () => {
 
   useEffect(() => {
     void refreshProjects();
+    return () => {
+      requestSequence.current++;
+      projectListSequence.current++;
+    };
   }, [refreshProjects]);
 
   useEffect(() => {
@@ -149,45 +195,62 @@ const WorkspaceApp: React.FC = () => {
     else localStorage.removeItem(CUSTOM_LOGO_KEY);
   }, []);
 
-  const switchProject = useCallback((id: string) => {
-    // Preserve the current sub-page when switching projects, e.g.
-    // /p/old/units -> /p/new/units.
-    const nextPath = buildProjectPath(location.pathname, id);
-    setAppStatus('loading');
-    navigate(nextPath);
-    setIsMobileMenuOpen(false);
-  }, [location.pathname, navigate]);
+  const switchProject = useCallback(
+    (id: string) => {
+      // Preserve the current sub-page when switching projects, e.g.
+      // /p/old/units -> /p/new/units.
+      const nextPath = buildProjectPath(location.pathname, id);
+      setAppStatus('loading');
+      navigate(nextPath);
+      setIsMobileMenuOpen(false);
+    },
+    [location.pathname, navigate],
+  );
 
-  const createProject = useCallback(async (input: NewProjectInput) => {
-    if (supabaseConfigError) throw supabaseConfigError;
-    const createdProject = await createProjectRecord(input);
-    const nextProjects = [...projects, createdProject];
-    setProjects(nextProjects);
-    setProjectStats(prev => ({
-      ...prev,
-      [createdProject.id]: { unitCount: 0, lastTransactionDate: null }
-    }));
-    navigate(`/p/${createdProject.id}`);
-    return createdProject;
-  }, [navigate, projects]);
+  const createProject = useCallback(
+    async (input: NewProjectInput) => {
+      if (supabaseConfigError) throw supabaseConfigError;
+      const createdProject = await createProjectRecord(input);
+      const nextProjects = [...projects, createdProject];
+      setProjects(nextProjects);
+      setProjectStats((prev) => ({
+        ...prev,
+        [createdProject.id]: { unitCount: 0, lastTransactionDate: null },
+      }));
+      navigate(`/p/${createdProject.id}`);
+      return createdProject;
+    },
+    [navigate, projects],
+  );
 
-  const updateProject = useCallback(async (id: string, input: UpdateProjectInput) => {
-    if (supabaseConfigError) throw supabaseConfigError;
-    const updatedProject = await persistProjectRecord(id, input);
-    setProjects(prev => prev.map(project => project.id === id ? updatedProject : project));
-    return updatedProject;
-  }, []);
+  const updateProject = useCallback(
+    async (id: string, input: UpdateProjectInput) => {
+      if (supabaseConfigError) throw supabaseConfigError;
+      const updatedProject = await persistProjectRecord(id, {
+        ...input,
+        version: projects.find((p) => p.id === id)?.version,
+      });
+      setProjects((prev) => prev.map((project) => (project.id === id ? updatedProject : project)));
+      return updatedProject;
+    },
+    [projects],
+  );
 
   const requireActiveProjectId = useCallback(() => {
     if (!activeProjectId) throw new Error('Select a project before changing project data.');
+    if (!canEdit) throw new Error('Your project role is read-only.');
     return activeProjectId;
-  }, [activeProjectId]);
+  }, [activeProjectId, canEdit]);
 
-  const refreshData = useCallback(async (projectId = activeProjectId) => {
-    if (!projectId) return;
-    await loadProject(projectId);
-    void refreshProjectStats(projects);
-  }, [activeProjectId, loadProject, projects, refreshProjectStats]);
+  const refreshData = useCallback(
+    async (projectId = activeProjectId) => {
+      if (!projectId) return;
+      if (selectedProject.current !== projectId) return;
+      await loadProject(projectId, true);
+      void refreshProjectStats(projects).catch(console.error);
+    },
+    [activeProjectId, loadProject, projects, refreshProjectStats],
+  );
 
   const addTransaction = async (t: Transaction) => {
     const projectId = requireActiveProjectId();
@@ -205,7 +268,12 @@ const WorkspaceApp: React.FC = () => {
   const deleteTransaction = async (id?: string, reason: string = 'User-requested deletion') => {
     const projectId = requireActiveProjectId();
     if (!id) throw new Error('Transaction id is required');
-    await removeTransaction(projectId, id, reason);
+    await removeTransaction(
+      projectId,
+      id,
+      reason,
+      transactions.find((t) => t.id === id)?.version ?? -1,
+    );
     await refreshData(projectId);
   };
 
@@ -225,11 +293,12 @@ const WorkspaceApp: React.FC = () => {
   const deleteUnit = async (id?: string, reason: string = 'User-requested deletion') => {
     const projectId = requireActiveProjectId();
     if (!id) throw new Error('Unit id is required');
-    await removeUnit(projectId, id, reason);
+    await removeUnit(projectId, id, reason, units.find((u) => u.id === id)?.version ?? -1);
     await refreshData(projectId);
   };
 
-  const contextValue = useMemo<AppContextType>(() => ({
+  const contextValue: AppContextType = {
+    canEdit,
     project: activeProject,
     activeProject,
     projects,
@@ -248,21 +317,8 @@ const WorkspaceApp: React.FC = () => {
     deleteTransaction,
     addUnit,
     updateUnit,
-    deleteUnit
-  }), [
-    activeProject,
-    projects,
-    projectStats,
-    units,
-    transactions,
-    appStatus,
-    loadError,
-    switchProject,
-    loadProject,
-    createProject,
-    updateProject,
-    refreshProjects
-  ]);
+    deleteUnit,
+  };
 
   return (
     <AppContext.Provider value={contextValue}>
@@ -282,10 +338,14 @@ const WorkspaceApp: React.FC = () => {
         </div>
 
         <div className="app-layout mx-auto flex min-h-screen max-w-[1500px]">
-          <aside className={`app-sidebar fixed inset-y-0 left-0 z-30 w-[17rem] px-4 py-4 transition-transform duration-300 md:sticky md:translate-x-0 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+          <aside
+            className={`app-sidebar fixed inset-y-0 left-0 z-30 w-[17rem] px-4 py-4 transition-transform duration-300 md:sticky md:translate-x-0 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}
+          >
             <div className="flex h-full flex-col">
               <header className="app-sidebar-header">
-                <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">Project</p>
+                <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
+                  Project
+                </p>
                 <div className="mt-3">
                   <BrandMark project={activeProject} logoUrl={brandLogoUrl} />
                 </div>
@@ -293,51 +353,128 @@ const WorkspaceApp: React.FC = () => {
               </header>
 
               <nav className="app-sidebar-nav mt-5 space-y-1" aria-label="Primary navigation">
-                <NavLink to={activeProject ? `/p/${activeProject.id}` : '/'} icon={<LayoutDashboard size={18} />} label="Dashboard" onClick={() => setIsMobileMenuOpen(false)} />
-                <NavLink to={activeProject ? `/p/${activeProject.id}/units` : '/'} icon={<Building2 size={18} />} label="Units List" onClick={() => setIsMobileMenuOpen(false)} />
-                <NavLink to={activeProject ? `/p/${activeProject.id}/transactions` : '/'} icon={<FileText size={18} />} label="Transactions" onClick={() => setIsMobileMenuOpen(false)} />
+                <NavLink
+                  to={activeProject ? `/p/${activeProject.id}` : '/'}
+                  icon={<LayoutDashboard size={18} />}
+                  label="Dashboard"
+                  onClick={() => setIsMobileMenuOpen(false)}
+                />
+                <NavLink
+                  to={activeProject ? `/p/${activeProject.id}/units` : '/'}
+                  icon={<Building2 size={18} />}
+                  label="Units List"
+                  onClick={() => setIsMobileMenuOpen(false)}
+                />
+                <NavLink
+                  to={activeProject ? `/p/${activeProject.id}/transactions` : '/'}
+                  icon={<FileText size={18} />}
+                  label="Transactions"
+                  onClick={() => setIsMobileMenuOpen(false)}
+                />
+                <NavLink
+                  to={activeProject ? `/p/${activeProject.id}/audit` : '/'}
+                  icon={<FileText size={18} />}
+                  label="Audit history"
+                  onClick={() => setIsMobileMenuOpen(false)}
+                />
               </nav>
 
               <div className="mt-auto space-y-4 pt-6">
-                <BrandLogoControl hasCustomLogo={Boolean(customLogoUrl)} onLogoChange={updateCustomLogo} />
+                <BrandLogoControl
+                  hasCustomLogo={Boolean(customLogoUrl)}
+                  onLogoChange={updateCustomLogo}
+                />
                 <ProjectSwitcher canUseDataRoutes={canUseDataRoutes} />
               </div>
             </div>
           </aside>
 
           <main className="app-main min-w-0 flex-1 px-4 py-5 md:px-8 md:py-6 xl:px-10">
+            {activeProject && !canEdit && appStatus === 'ready' && (
+              <p className="mb-4 rounded-lg bg-blue-50 p-3 text-sm">
+                Read-only project access. Contact your project owner if you need to make changes.
+              </p>
+            )}
             <div className="app-header mb-5 flex items-center justify-between gap-4 px-5 py-4">
               <div>
-                <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">Workspace</p>
+                <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
+                  Workspace
+                </p>
                 <h2 className="mt-1 text-[1.65rem] font-semibold tracking-tight text-slate-950">
                   {activeProject ? activeProject.name : APP_NAME}
                 </h2>
               </div>
               <div className="hidden text-right md:block">
-                <p className="text-sm text-slate-500">{activeProject?.location || 'Live finance metrics.'}</p>
+                <p className="text-sm text-slate-500">
+                  {activeProject?.location || 'Live finance metrics.'}
+                </p>
               </div>
             </div>
 
             {loadError && (
               <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-amber-900 shadow-sm">
-                <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-amber-700">Data connection issue</p>
+                <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-amber-700">
+                  Data connection issue
+                </p>
                 <p className="mt-2 text-sm leading-6">{loadError}</p>
               </div>
             )}
 
             {!canUseDataRoutes ? (
-              <SupabaseSetupPanel needsDatabaseSetup={needsDatabaseSetup} needsRlsSetup={needsRlsSetup} />
+              <SupabaseSetupPanel
+                needsDatabaseSetup={needsDatabaseSetup}
+                needsRlsSetup={needsRlsSetup}
+              />
             ) : (
               <ErrorBoundary>
                 <Routes>
                   <Route path="/" element={<ProjectPicker />} />
                   <Route path="/admin/projects" element={<ProjectManager />} />
                   <Route path="/admin/projects/new" element={<ProjectFormPage mode="create" />} />
-                  <Route path="/admin/projects/:projectId/edit" element={<ProjectFormPage mode="edit" />} />
-                  <Route path="/p/:projectId" element={<ProjectGuard><Dashboard /></ProjectGuard>} />
-                  <Route path="/p/:projectId/units" element={<ProjectGuard><UnitList /></ProjectGuard>} />
-                  <Route path="/p/:projectId/units/:unitId" element={<ProjectGuard><UnitDetail /></ProjectGuard>} />
-                  <Route path="/p/:projectId/transactions" element={<ProjectGuard><TransactionList /></ProjectGuard>} />
+                  <Route
+                    path="/admin/projects/:projectId/edit"
+                    element={<ProjectFormPage mode="edit" />}
+                  />
+                  <Route
+                    path="/p/:projectId"
+                    element={
+                      <ProjectGuard>
+                        <Dashboard />
+                      </ProjectGuard>
+                    }
+                  />
+                  <Route
+                    path="/p/:projectId/units"
+                    element={
+                      <ProjectGuard>
+                        <UnitList />
+                      </ProjectGuard>
+                    }
+                  />
+                  <Route
+                    path="/p/:projectId/units/:unitId"
+                    element={
+                      <ProjectGuard>
+                        <UnitDetail />
+                      </ProjectGuard>
+                    }
+                  />
+                  <Route
+                    path="/p/:projectId/transactions"
+                    element={
+                      <ProjectGuard>
+                        <TransactionList />
+                      </ProjectGuard>
+                    }
+                  />
+                  <Route
+                    path="/p/:projectId/audit"
+                    element={
+                      <ProjectGuard>
+                        <AuditLog />
+                      </ProjectGuard>
+                    }
+                  />
                   <Route path="/units" element={<LegacyRedirect target="units" />} />
                   <Route path="/units/:unitId" element={<LegacyRedirect target="units" />} />
                   <Route path="/transactions" element={<LegacyRedirect target="transactions" />} />
@@ -377,25 +514,39 @@ const buildProjectPath = (pathname: string, projectId: string) => {
 
 const SupabaseSetupPanel: React.FC<{ needsDatabaseSetup?: boolean; needsRlsSetup?: boolean }> = ({
   needsDatabaseSetup = false,
-  needsRlsSetup = false
+  needsRlsSetup = false,
 }) => (
   <section className="rounded-xl border border-slate-200 bg-white px-5 py-5 shadow-sm">
-    <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-500">Setup required</p>
+    <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-500">
+      Setup required
+    </p>
     <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
-      {needsDatabaseSetup ? 'Create the Supabase tables' : needsRlsSetup ? 'Allow local app access' : 'Connect Supabase to use project data'}
+      {needsDatabaseSetup
+        ? 'Create the Supabase tables'
+        : needsRlsSetup
+          ? 'Check project membership'
+          : 'Connect Supabase to use project data'}
     </h1>
     <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
       {needsDatabaseSetup
         ? 'The app is connected to Supabase, but this fresh project is missing the database tables. Run the setup SQL once, then refresh the app.'
         : needsRlsSetup
-          ? 'The tables exist, but Supabase Row Level Security is blocking the frontend anon key. Run the local RLS fix once, then refresh the app.'
+          ? 'Sign in with an invited account and ask the project owner to check your membership. Keep Row Level Security enabled.'
           : 'Create a local env file from the checked-in template, add the Supabase project URL and anon key, then restart the Vite dev server.'}
     </p>
-    <pre className="mt-4 overflow-x-auto rounded-md border border-slate-200 bg-slate-950 px-4 py-3 text-sm text-slate-50"><code>{needsDatabaseSetup ? `Open Supabase > SQL Editor
-Run: sql/supabase_setup.sql` : needsRlsSetup ? `Open Supabase > SQL Editor
-Run: sql/supabase_local_rls_fix.sql` : `cp .env.example .env.local
+    <pre className="mt-4 overflow-x-auto rounded-md border border-slate-200 bg-slate-950 px-4 py-3 text-sm text-slate-50">
+      <code>
+        {needsDatabaseSetup
+          ? `Open Supabase > SQL Editor
+Run: sql/supabase_setup.sql`
+          : needsRlsSetup
+            ? `Open Supabase > SQL Editor
+Follow: docs/deployment-notes.md`
+            : `cp .env.example .env.local
 VITE_SUPABASE_URL=https://your-project-ref.supabase.co
-VITE_SUPABASE_ANON_KEY=your_supabase_anon_or_publishable_key`}</code></pre>
+VITE_SUPABASE_ANON_KEY=your_supabase_anon_or_publishable_key`}
+      </code>
+    </pre>
   </section>
 );
 
@@ -403,16 +554,14 @@ const ProjectGuard: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   const { projectId } = useParams<{ projectId: string }>();
   const { activeProject, appStatus, loadProject, projects } = useApp();
 
-  const projectExists = Boolean(projectId && projects.some(project => project.id === projectId));
+  const projectExists = Boolean(projectId && projects.some((project) => project.id === projectId));
 
   useEffect(() => {
-    if (!projectId || !projectExists) return;
+    if (!projectId || !projectExists || activeProject?.id === projectId) return;
     // Project routes are authoritative. If the URL changes, load that project
     // before rendering children that consume useApp().
-    if (activeProject?.id !== projectId || appStatus !== 'ready') {
-      void loadProject(projectId);
-    }
-  }, [activeProject?.id, appStatus, loadProject, projectExists, projectId]);
+    void loadProject(projectId);
+  }, [activeProject?.id, loadProject, projectExists, projectId]);
 
   if (appStatus === 'loading' && projects.length === 0) {
     return <LoadingPanel label="Loading projects" />;
@@ -443,8 +592,12 @@ const ProjectNotFound: React.FC = () => (
       <AlertTriangle size={22} />
     </div>
     <h1 className="mt-4 text-2xl font-semibold tracking-tight text-slate-950">Project not found</h1>
-    <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-600">The project in this link does not exist or is not available from this workspace.</p>
-    <Link to="/" className="dashboard-primary-button mt-5 inline-flex">Back to projects</Link>
+    <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-600">
+      The project in this link does not exist or is not available from this workspace.
+    </p>
+    <Link to="/" className="dashboard-primary-button mt-5 inline-flex">
+      Back to projects
+    </Link>
   </section>
 );
 
@@ -456,9 +609,17 @@ const ProjectLoadFailed: React.FC<{ projectId: string }> = ({ projectId }) => {
       <div className="flex items-start gap-3">
         <AlertTriangle size={20} className="mt-0.5 shrink-0" />
         <div>
-          <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-rose-700">Project load failed</p>
-          <p className="mt-2 text-sm leading-6">{loadError || 'The project data could not be loaded.'}</p>
-          <button type="button" className="dashboard-secondary-button mt-4" onClick={() => void loadProject(projectId)}>
+          <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-rose-700">
+            Project load failed
+          </p>
+          <p className="mt-2 text-sm leading-6">
+            {loadError || 'The project data could not be loaded.'}
+          </p>
+          <button
+            type="button"
+            className="dashboard-secondary-button mt-4"
+            onClick={() => void loadProject(projectId)}
+          >
             <RefreshCw size={16} />
             Retry
           </button>
@@ -490,9 +651,15 @@ const LegacyRedirect: React.FC<{ target?: 'units' | 'transactions' }> = ({ targe
   // successfully opened project so existing bookmarks still land somewhere useful.
   if (!storedProjectId) return <Navigate to="/" replace />;
   if (target === 'units') {
-    return <Navigate to={unitId ? `/p/${storedProjectId}/units/${unitId}` : `/p/${storedProjectId}/units`} replace />;
+    return (
+      <Navigate
+        to={unitId ? `/p/${storedProjectId}/units/${unitId}` : `/p/${storedProjectId}/units`}
+        replace
+      />
+    );
   }
-  if (target === 'transactions') return <Navigate to={`/p/${storedProjectId}/transactions`} replace />;
+  if (target === 'transactions')
+    return <Navigate to={`/p/${storedProjectId}/transactions`} replace />;
   return <Navigate to="/" replace />;
 };
 
@@ -507,43 +674,61 @@ const ProjectSwitcher: React.FC<{ canUseDataRoutes: boolean }> = ({ canUseDataRo
       <button
         type="button"
         className="flex w-full items-center justify-between gap-3 text-left"
-        onClick={() => setOpen(value => !value)}
+        onClick={() => setOpen((value) => !value)}
         disabled={!canUseDataRoutes}
       >
         <div className="flex min-w-0 items-center gap-3">
-          <div className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border ${canUseDataRoutes ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+          <div
+            className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border ${canUseDataRoutes ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}
+          >
             <BadgeIndianRupee size={18} />
           </div>
           <div className="min-w-0">
-            <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-slate-500">Active project</p>
-            <p className={`mt-1 truncate text-sm font-medium ${canUseDataRoutes ? 'text-emerald-700' : 'text-amber-700'}`}>
+            <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-slate-500">
+              Active project
+            </p>
+            <p
+              className={`mt-1 truncate text-sm font-medium ${canUseDataRoutes ? 'text-emerald-700' : 'text-amber-700'}`}
+            >
               {activeProject?.name || (canUseDataRoutes ? 'Choose project' : 'Setup required')}
             </p>
-            {activeProject?.location && <p className="truncate text-xs text-slate-500">{activeProject.location}</p>}
+            {activeProject?.location && (
+              <p className="truncate text-xs text-slate-500">{activeProject.location}</p>
+            )}
           </div>
         </div>
-        <ChevronDown size={16} className={`shrink-0 text-slate-400 transition ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown
+          size={16}
+          className={`shrink-0 text-slate-400 transition ${open ? 'rotate-180' : ''}`}
+        />
       </button>
 
       {open && (
         <div className="mt-3 space-y-2 border-t border-slate-200 pt-3">
           {projects.length === 0 ? (
-            <p className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-500">No projects yet.</p>
-          ) : projects.map(project => (
-            <button
-              key={project.id}
-              type="button"
-              onClick={() => {
-                switchProject(project.id);
-                setOpen(false);
-              }}
-              className={`flex w-full items-center gap-2 rounded-md border px-3 py-2 text-left text-sm transition ${project.id === activeProject?.id ? 'border-slate-300 bg-slate-100 text-slate-950' : 'border-transparent text-slate-600 hover:border-slate-200 hover:bg-slate-50'}`}
-            >
-              <FolderOpen size={15} />
-              <span className="min-w-0 flex-1 truncate">{project.name}</span>
-            </button>
-          ))}
-          <Link to="/admin/projects" className="mt-2 flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+            <p className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-500">
+              No projects yet.
+            </p>
+          ) : (
+            projects.map((project) => (
+              <button
+                key={project.id}
+                type="button"
+                onClick={() => {
+                  switchProject(project.id);
+                  setOpen(false);
+                }}
+                className={`flex w-full items-center gap-2 rounded-md border px-3 py-2 text-left text-sm transition ${project.id === activeProject?.id ? 'border-slate-300 bg-slate-100 text-slate-950' : 'border-transparent text-slate-600 hover:border-slate-200 hover:bg-slate-50'}`}
+              >
+                <FolderOpen size={15} />
+                <span className="min-w-0 flex-1 truncate">{project.name}</span>
+              </button>
+            ))
+          )}
+          <Link
+            to="/admin/projects"
+            className="mt-2 flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
             <Settings size={15} />
             Manage projects
           </Link>
@@ -560,7 +745,9 @@ const ProjectManager: React.FC = () => {
     <div className="mx-auto max-w-5xl space-y-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-500">Admin</p>
+          <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-500">
+            Admin
+          </p>
           <h1 className="mt-1 text-3xl font-semibold tracking-tight text-slate-950">Projects</h1>
         </div>
         <Link to="/admin/projects/new" className="dashboard-primary-button">
@@ -582,24 +769,41 @@ const ProjectManager: React.FC = () => {
           </thead>
           <tbody>
             {projects.length === 0 ? (
-              <tr><td colSpan={5} className="empty-state-cell">No projects yet.</td></tr>
-            ) : projects.map(project => (
-              <tr key={project.id}>
-                <td>
-                  <p className="font-semibold text-slate-900">{project.name}</p>
-                  <p className="text-xs text-slate-500">{project.location || 'No location'}</p>
-                </td>
-                <td className="font-mono text-xs text-slate-600">{project.code}</td>
-                <td>{projectStats[project.id]?.unitCount ?? 0}</td>
-                <td>{projectStats[project.id]?.lastTransactionDate || '-'}</td>
-                <td className="text-right">
-                  <div className="flex justify-end gap-2">
-                    <button type="button" onClick={() => switchProject(project.id)} className="dashboard-secondary-button">Open</button>
-                    <Link to={`/admin/projects/${project.id}/edit`} className="dashboard-secondary-button">Edit</Link>
-                  </div>
+              <tr>
+                <td colSpan={5} className="empty-state-cell">
+                  No projects yet.
                 </td>
               </tr>
-            ))}
+            ) : (
+              projects.map((project) => (
+                <tr key={project.id}>
+                  <td>
+                    <p className="font-semibold text-slate-900">{project.name}</p>
+                    <p className="text-xs text-slate-500">{project.location || 'No location'}</p>
+                  </td>
+                  <td className="font-mono text-xs text-slate-600">{project.code}</td>
+                  <td>{projectStats[project.id]?.unitCount ?? 0}</td>
+                  <td>{projectStats[project.id]?.lastTransactionDate || '-'}</td>
+                  <td className="text-right">
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => switchProject(project.id)}
+                        className="dashboard-secondary-button"
+                      >
+                        Open
+                      </button>
+                      <Link
+                        to={`/admin/projects/${project.id}/edit`}
+                        className="dashboard-secondary-button"
+                      >
+                        Edit
+                      </Link>
+                    </div>
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>
@@ -611,7 +815,7 @@ const ProjectFormPage: React.FC<{ mode: 'create' | 'edit' }> = ({ mode }) => {
   const navigate = useNavigate();
   const { projectId } = useParams<{ projectId: string }>();
   const { createProject, projects, updateProject } = useApp();
-  const project = projects.find(candidate => candidate.id === projectId);
+  const project = projects.find((candidate) => candidate.id === projectId);
 
   if (mode === 'edit' && !project) return <ProjectNotFound />;
 
@@ -619,7 +823,9 @@ const ProjectFormPage: React.FC<{ mode: 'create' | 'edit' }> = ({ mode }) => {
     <div className="mx-auto max-w-2xl space-y-5">
       <div>
         <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-500">Admin</p>
-        <h1 className="mt-1 text-3xl font-semibold tracking-tight text-slate-950">{mode === 'create' ? 'New Project' : 'Edit Project'}</h1>
+        <h1 className="mt-1 text-3xl font-semibold tracking-tight text-slate-950">
+          {mode === 'create' ? 'New Project' : 'Edit Project'}
+        </h1>
       </div>
       <ProjectForm
         project={project}
@@ -638,7 +844,11 @@ const ProjectFormPage: React.FC<{ mode: 'create' | 'edit' }> = ({ mode }) => {
   );
 };
 
-const BrandMark: React.FC<{ compact?: boolean; project?: Project | null; logoUrl?: string }> = ({ compact = false, project, logoUrl }) => (
+const BrandMark: React.FC<{ compact?: boolean; project?: Project | null; logoUrl?: string }> = ({
+  compact = false,
+  project,
+  logoUrl,
+}) => (
   <div className={`brand-mark ${compact ? 'brand-mark-compact' : ''}`}>
     {logoUrl ? (
       <img src={logoUrl} alt={`${APP_NAME} logo`} className="brand-mark-image brand-mark-logo" />
@@ -656,7 +866,10 @@ const BrandMark: React.FC<{ compact?: boolean; project?: Project | null; logoUrl
   </div>
 );
 
-const BrandLogoControl: React.FC<{ hasCustomLogo: boolean; onLogoChange: (logoUrl: string) => void }> = ({ hasCustomLogo, onLogoChange }) => {
+const BrandLogoControl: React.FC<{
+  hasCustomLogo: boolean;
+  onLogoChange: (logoUrl: string) => void;
+}> = ({ hasCustomLogo, onLogoChange }) => {
   const [logoError, setLogoError] = useState<string | null>(null);
 
   const handleLogoUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -689,7 +902,11 @@ const BrandLogoControl: React.FC<{ hasCustomLogo: boolean; onLogoChange: (logoUr
         <input type="file" accept="image/*" className="sr-only" onChange={handleLogoUpload} />
       </label>
       {hasCustomLogo && (
-        <button type="button" className="dashboard-secondary-button justify-center" onClick={() => onLogoChange('')}>
+        <button
+          type="button"
+          className="dashboard-secondary-button justify-center"
+          onClick={() => onLogoChange('')}
+        >
           Reset logo
         </button>
       )}
@@ -698,24 +915,29 @@ const BrandLogoControl: React.FC<{ hasCustomLogo: boolean; onLogoChange: (logoUr
   );
 };
 
-const NavLink: React.FC<{ to: string; icon: React.ReactNode; label: string; onClick: () => void }> = ({ to, icon, label, onClick }) => {
+const NavLink: React.FC<{
+  to: string;
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+}> = ({ to, icon, label, onClick }) => {
   const location = useLocation();
   const isProjectRoot = /^\/p\/[^/]+$/.test(to);
-  const isActive = location.pathname === to || (!isProjectRoot && to !== '/' && location.pathname.startsWith(to));
+  const isActive =
+    location.pathname === to || (!isProjectRoot && to !== '/' && location.pathname.startsWith(to));
 
   return (
-    <Link
-      to={to}
-      onClick={onClick}
-      className={`app-nav-link ${isActive ? 'is-active' : ''}`}
-    >
+    <Link to={to} onClick={onClick} className={`app-nav-link ${isActive ? 'is-active' : ''}`}>
       {icon}
       <span>{label}</span>
     </Link>
   );
 };
 
-class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null }> {
+class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
   declare props: Readonly<{ children: React.ReactNode }>;
   state: { error: Error | null } = { error: null };
 
@@ -734,9 +956,15 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
           <div className="flex items-start gap-3">
             <AlertTriangle size={20} className="mt-0.5 shrink-0" />
             <div>
-              <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-rose-700">Something went wrong</p>
+              <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-rose-700">
+                Something went wrong
+              </p>
               <p className="mt-2 text-sm leading-6">{this.state.error.message}</p>
-              <button type="button" className="dashboard-secondary-button mt-4" onClick={() => window.location.reload()}>
+              <button
+                type="button"
+                className="dashboard-secondary-button mt-4"
+                onClick={() => window.location.reload()}
+              >
                 <RefreshCw size={16} />
                 Retry
               </button>

@@ -1,68 +1,68 @@
 import fs from 'node:fs';
-
-const readEnvFile = (path) => {
-  if (!fs.existsSync(path)) return {};
-
-  return Object.fromEntries(
-    fs.readFileSync(path, 'utf8')
-      .split(/\r?\n/)
-      .map(line => line.trim())
-      .filter(line => line && !line.startsWith('#'))
-      .map(line => {
-        const separator = line.indexOf('=');
-        return [line.slice(0, separator), line.slice(separator + 1)];
-      })
-  );
-};
-
-const env = {
-  ...readEnvFile('.env'),
-  ...readEnvFile('.env.local'),
-  ...process.env
-};
-
-const supabaseUrl = env.VITE_SUPABASE_URL;
-const anonKey = env.VITE_SUPABASE_ANON_KEY;
-const demoMode = String(env.VITE_DEMO_MODE ?? '').toLowerCase() === 'true';
-
-if (demoMode) {
-  console.log('Demo mode enabled; skipping Supabase schema check.');
-  process.exit(0);
-}
-
-if (!supabaseUrl || !anonKey) {
-  console.error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY.');
-  process.exit(1);
-}
-
-const tables = ['projects', 'units', 'transactions', 'transaction_audit_log'];
-const missing = [];
-
-for (const table of tables) {
-  const response = await fetch(`${supabaseUrl}/rest/v1/${table}?select=*&limit=1`, {
-    headers: {
-      apikey: anonKey,
-      Authorization: `Bearer ${anonKey}`
+const readEnv = (path) =>
+  fs.existsSync(path)
+    ? Object.fromEntries(
+        fs
+          .readFileSync(path, 'utf8')
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter((l) => l && !l.startsWith('#') && l.includes('='))
+          .map((l) => {
+            const i = l.indexOf('=');
+            return [l.slice(0, i), l.slice(i + 1).replace(/^['"]|['"]$/g, '')];
+          }),
+      )
+    : {};
+const env = { ...readEnv('.env'), ...readEnv('.env.local'), ...process.env };
+if (String(env.VITE_DEMO_MODE).toLowerCase() === 'true') {
+  console.log('Demo mode: no Supabase checks were performed.');
+} else {
+  try {
+    const url = env.VITE_SUPABASE_URL,
+      key = env.VITE_SUPABASE_ANON_KEY,
+      jwt = env.SUPABASE_USER_JWT;
+    if (!url || !key || !jwt)
+      throw new Error(
+        'Set VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY and SUPABASE_USER_JWT (an authenticated user session token; never a service-role key).',
+      );
+    const request = async (path, token) =>
+      fetch(`${url}/rest/v1/${path}`, {
+        headers: { apikey: key, Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000),
+      });
+    const version = await request('rpc/finance_schema_version', jwt);
+    if (!version.ok)
+      throw new Error(
+        `Schema version check failed (HTTP ${version.status}). Apply the migration and verify the user token.`,
+      );
+    if ((await version.json()) !== 20261016)
+      throw new Error('Unexpected schema version. Apply sql/20261016_finance_hardening.sql.');
+    for (const table of [
+      'projects',
+      'units',
+      'transactions',
+      'project_members',
+      'vendors',
+      'audit_events',
+      'transaction_audit_log',
+    ]) {
+      const response = await request(`${table}?select=*&limit=0`, jwt);
+      if (!response.ok)
+        throw new Error(`Authenticated ${table} check failed (HTTP ${response.status}).`);
+      const anonymous = await request(`${table}?select=*&limit=0`, key);
+      if (anonymous.ok)
+        throw new Error(
+          `Anonymous access is still enabled for ${table}. Apply the security migration.`,
+        );
+      if (![401, 403].includes(anonymous.status))
+        throw new Error(`Unexpected anonymous ${table} response (HTTP ${anonymous.status}).`);
+      console.log(`ok ${table}: authenticated read; anonymous access denied`);
     }
-  });
-
-  if (response.ok) {
-    console.log(`ok ${table}`);
-    continue;
-  }
-
-  const body = await response.json().catch(() => ({}));
-  const message = body.message ?? response.statusText;
-  console.log(`fail ${table}: ${response.status} ${message}`);
-
-  if (body.code === 'PGRST205' || message.includes('schema cache')) {
-    missing.push(table);
+    console.log(
+      'Schema version and API access checks passed. Role isolation is covered by the automated database tests.',
+    );
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : 'Supabase check failed.');
+    process.exitCode = 1;
   }
 }
-
-if (missing.length > 0) {
-  console.error(`Missing Supabase tables: ${missing.join(', ')}. Run sql/supabase_setup.sql in Supabase SQL Editor.`);
-  process.exit(1);
-}
-
-console.log('Supabase schema check passed.');

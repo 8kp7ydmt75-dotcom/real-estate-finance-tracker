@@ -33,3 +33,8 @@ public/local-brand-logo.*
 *.njsproj
 *.sln
 *.sw?
+
+playwright-report/
+test-results/
+.tmp-dashboard-tests/
+coverage/

@@ -44,4 +44,4 @@ Never commit:
 
 ## Security Notes
 
-The local RLS bypass SQL is for private development only. Public Supabase-backed deployments must use real authentication and RLS policies.
+Never disable RLS. Apply the documented schema/migration and use authenticated project memberships. Add a regression test for changes to money, permissions, persistence or loading behavior.

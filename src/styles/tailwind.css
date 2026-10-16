@@ -1,0 +1,10 @@
+@import 'tailwindcss';
+@theme {
+  --color-primary: #0f172a;
+  --color-secondary: #334155;
+  --color-accent: #0ea5e9;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}

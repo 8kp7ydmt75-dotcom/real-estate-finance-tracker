@@ -1,11 +1,19 @@
 import React, { createContext, useContext } from 'react';
-import { NewProjectInput, Project, ProjectStats, Transaction, Unit, UpdateProjectInput } from '../types/types';
+import {
+  NewProjectInput,
+  Project,
+  ProjectStats,
+  Transaction,
+  Unit,
+  UpdateProjectInput,
+} from '../types/types';
 
 export type AppStatus = 'loading' | 'selecting' | 'ready' | 'error';
 
 // Routes choose the project; AppContext exposes the loaded project-scoped rows
 // and write helpers to screens under that route.
 export interface AppContextType {
+  canEdit: boolean;
   project: Project | null;
   activeProject: Project | null;
   projects: Project[];

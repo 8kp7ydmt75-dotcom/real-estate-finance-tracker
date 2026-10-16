@@ -21,6 +21,7 @@ const ProjectForm: React.FC<ProjectFormProps> = ({ project, onSubmit, onCancel }
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (saving) return;
     const normalizedName = name.trim();
     const normalizedCode = code.trim().toUpperCase();
 
@@ -44,7 +45,7 @@ const ProjectForm: React.FC<ProjectFormProps> = ({ project, onSubmit, onCancel }
       await onSubmit({
         name: normalizedName,
         code: normalizedCode,
-        location: location.trim() || null
+        location: location.trim() || null,
       });
     } catch (submitError: any) {
       console.error('Error saving project', submitError);
@@ -56,7 +57,11 @@ const ProjectForm: React.FC<ProjectFormProps> = ({ project, onSubmit, onCancel }
 
   return (
     <form onSubmit={handleSubmit} className="dashboard-surface space-y-5">
-      {error && <div className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>}
+      {error && (
+        <div className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          {error}
+        </div>
+      )}
 
       <div className="form-field">
         <label htmlFor="project-name">Name *</label>
@@ -99,10 +104,18 @@ const ProjectForm: React.FC<ProjectFormProps> = ({ project, onSubmit, onCancel }
       </div>
 
       <footer className="flex flex-col-reverse gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:justify-end">
-        <button type="button" onClick={onCancel} className="dashboard-secondary-button justify-center sm:min-w-28">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="dashboard-secondary-button justify-center sm:min-w-28"
+        >
           Cancel
         </button>
-        <button type="submit" disabled={saving} className="dashboard-primary-button justify-center sm:min-w-32 disabled:opacity-60">
+        <button
+          type="submit"
+          disabled={saving}
+          className="dashboard-primary-button justify-center sm:min-w-32 disabled:opacity-60"
+        >
           {saving ? 'Saving...' : isEditing ? 'Update Project' : 'Create Project'}
         </button>
       </footer>
